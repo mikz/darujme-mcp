@@ -20,6 +20,7 @@ def test_transaction_redacts_donor_pii_by_default() -> None:
     assert transaction.raw is None
     assert transaction.pledge is not None
     assert transaction.pledge.pledge_id == 1203450
+    assert transaction.outgoing_variable_symbol == "990001"
 
 
 def test_transaction_includes_pii_and_raw_only_when_requested() -> None:

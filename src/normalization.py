@@ -57,7 +57,7 @@ def normalize_transaction(
         sent_amount=sent_amount,
         received_at=_string_or_none(raw.get("receivedAt")),
         outgoing_amount=outgoing_amount,
-        outgoing_vs=_string_or_none(raw.get("outgoingVs")),
+        outgoing_variable_symbol=_string_or_none(raw.get("outgoingVs")),
         outgoing_bank_account=_string_or_none(raw.get("outgoingBankAccount")),
         last_modified_at=_string_or_none(raw.get("lastModifiedDateTime")),
         dates=DarujmeDates(

@@ -8,6 +8,7 @@ import json
 import secrets
 import threading
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs
@@ -28,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from client import DarujmeClient, DarujmeError, NotAuthenticatedError
 from models import (
     ControlTotals,
+    DarujmeTransaction,
     ErrorInfo,
     FindPledgesResult,
     FindProjectsResult,
@@ -139,8 +141,8 @@ class FindTransactionsQuery(PrivacyMixin):
             "examples": [
                 {
                     "mode": "search",
-                    "from_received_date": "2026-05-01",
-                    "to_received_date": "2026-05-16",
+                    "received_from": "2026-05-01",
+                    "received_to": "2026-05-16",
                     "transaction_states": ["success", "sent_to_organization"],
                     "limit": 100,
                     "include_donor_pii": False,
@@ -156,12 +158,16 @@ class FindTransactionsQuery(PrivacyMixin):
     ids: list[int] = Field(default_factory=list, max_length=100)
     project_ids: list[int] = Field(default_factory=list)
     promotion_ids: list[int] = Field(default_factory=list)
-    from_received_date: date | None = None
-    to_received_date: date | None = None
-    from_outgoing_date: date | None = None
-    to_outgoing_date: date | None = None
-    from_failed_date: date | None = None
-    to_failed_date: date | None = None
+    received_from: date | None = None
+    received_to: date | None = None
+    outgoing_from: date | None = None
+    outgoing_to: date | None = None
+    failed_from: date | None = None
+    failed_to: date | None = None
+    outgoing_variable_symbol: str | None = None
+    outgoing_amount: Decimal | None = None
+    outgoing_currency: str | None = None
+    outgoing_bank_account: str | None = None
     last_modified_date_time: str | None = None
     transaction_states: list[TransactionState] = Field(default_factory=list)
     limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
@@ -170,6 +176,9 @@ class FindTransactionsQuery(PrivacyMixin):
     @model_validator(mode="after")
     def validate_mode(self) -> FindTransactionsQuery:
         _validate_ids_mode(self.mode, self.ids, "ids")
+        _validate_date_range(self.received_from, self.received_to, "received")
+        _validate_date_range(self.outgoing_from, self.outgoing_to, "outgoing")
+        _validate_date_range(self.failed_from, self.failed_to, "failed")
         return self
 
     def filter_hash(self) -> str:
@@ -179,12 +188,18 @@ class FindTransactionsQuery(PrivacyMixin):
                 "ids": self.ids,
                 "project_ids": sorted(self.project_ids),
                 "promotion_ids": sorted(self.promotion_ids),
-                "from_received_date": _api_date(self.from_received_date),
-                "to_received_date": _api_date(self.to_received_date),
-                "from_outgoing_date": _api_date(self.from_outgoing_date),
-                "to_outgoing_date": _api_date(self.to_outgoing_date),
-                "from_failed_date": _api_date(self.from_failed_date),
-                "to_failed_date": _api_date(self.to_failed_date),
+                "received_from": _api_date(self.received_from),
+                "received_to": _api_date(self.received_to),
+                "outgoing_from": _api_date(self.outgoing_from),
+                "outgoing_to": _api_date(self.outgoing_to),
+                "failed_from": _api_date(self.failed_from),
+                "failed_to": _api_date(self.failed_to),
+                "outgoing_variable_symbol": self.outgoing_variable_symbol,
+                "outgoing_amount": str(self.outgoing_amount)
+                if self.outgoing_amount is not None
+                else None,
+                "outgoing_currency": self.outgoing_currency,
+                "outgoing_bank_account": self.outgoing_bank_account,
                 "last_modified_date_time": self.last_modified_date_time,
                 "transaction_states": sorted(self.transaction_states),
                 "include_donor_pii": self.include_donor_pii,
@@ -202,6 +217,8 @@ class FindPledgesQuery(PrivacyMixin):
                     "mode": "search",
                     "from_pledged_date": "2026-05-01",
                     "to_pledged_date": "2026-05-16",
+                    "received_from": "2026-05-01",
+                    "received_to": "2026-05-16",
                     "limit": 100,
                     "include_donor_pii": False,
                 },
@@ -218,10 +235,10 @@ class FindPledgesQuery(PrivacyMixin):
     promotion_ids: list[int] = Field(default_factory=list)
     from_pledged_date: date | None = None
     to_pledged_date: date | None = None
-    from_received_date: date | None = None
-    to_received_date: date | None = None
-    from_outgoing_date: date | None = None
-    to_outgoing_date: date | None = None
+    received_from: date | None = None
+    received_to: date | None = None
+    outgoing_from: date | None = None
+    outgoing_to: date | None = None
     last_modified_date_time: str | None = None
     payment_methods: list[str] = Field(default_factory=list)
     recurrent_states: list[str] = Field(default_factory=list)
@@ -239,6 +256,9 @@ class FindPledgesQuery(PrivacyMixin):
             _validate_ids_mode(self.mode, self.ids, "ids")
         if self.project_id is not None and self.project_ids:
             raise ValueError("Use project_id or project_ids, not both")
+        _validate_date_range(self.from_pledged_date, self.to_pledged_date, "pledged")
+        _validate_date_range(self.received_from, self.received_to, "received")
+        _validate_date_range(self.outgoing_from, self.outgoing_to, "outgoing")
         return self
 
     def filter_hash(self) -> str:
@@ -252,10 +272,10 @@ class FindPledgesQuery(PrivacyMixin):
                 "promotion_ids": sorted(self.promotion_ids),
                 "from_pledged_date": _api_date(self.from_pledged_date),
                 "to_pledged_date": _api_date(self.to_pledged_date),
-                "from_received_date": _api_date(self.from_received_date),
-                "to_received_date": _api_date(self.to_received_date),
-                "from_outgoing_date": _api_date(self.from_outgoing_date),
-                "to_outgoing_date": _api_date(self.to_outgoing_date),
+                "received_from": _api_date(self.received_from),
+                "received_to": _api_date(self.received_to),
+                "outgoing_from": _api_date(self.outgoing_from),
+                "outgoing_to": _api_date(self.outgoing_to),
                 "last_modified_date_time": self.last_modified_date_time,
                 "payment_methods": sorted(self.payment_methods),
                 "recurrent_states": sorted(self.recurrent_states),
@@ -321,11 +341,11 @@ class FindPromotionsQuery(BaseModel):
         )
 
 
-class GiftConfirmationRequest(PrivacyMixin):
+class DonationConfirmationRequest(PrivacyMixin):
     model_config = ConfigDict(extra="forbid")
 
-    from_received_date: date | None = None
-    to_received_date: date | None = None
+    received_from: date | None = None
+    received_to: date | None = None
     project_ids: list[int] = Field(default_factory=list)
     promotion_ids: list[int] = Field(default_factory=list)
     transaction_states: list[TransactionState] = Field(
@@ -333,6 +353,11 @@ class GiftConfirmationRequest(PrivacyMixin):
     )
     limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
     cursor: str | None = None
+
+    @model_validator(mode="after")
+    def validate_ranges(self) -> DonationConfirmationRequest:
+        _validate_date_range(self.received_from, self.received_to, "received")
+        return self
 
 
 class ConfirmationGroup(BaseModel):
@@ -344,7 +369,7 @@ class ConfirmationGroup(BaseModel):
     total_by_currency: dict[str, str] = Field(default_factory=dict)
 
 
-class GiftConfirmationsResult(BaseModel):
+class DonationConfirmationsResult(BaseModel):
     groups: list[ConfirmationGroup] = Field(default_factory=list)
     next_cursor: str | None = None
     control_totals: ControlTotals | None = None
@@ -363,6 +388,8 @@ class MetadataLimits(BaseModel):
 
 
 class MetadataResult(BaseModel):
+    source_documents: list[str] = Field(default_factory=list)
+    comparison_fields: dict[str, Any] = Field(default_factory=dict)
     setup_tools: list[str] = Field(default_factory=list)
     login_contract: dict[str, Any] = Field(default_factory=dict)
     query_modes: dict[str, list[str]] = Field(default_factory=dict)
@@ -685,20 +712,20 @@ async def darujme_find_promotions(
 
 @mcp.tool
 @_requires_login
-async def darujme_prepare_gift_confirmations(
+async def darujme_prepare_donation_confirmations(
     request: Annotated[
-        GiftConfirmationRequest,
+        DonationConfirmationRequest,
         Field(
             description=(
-                "Read-only grouping of eligible gifts for later confirmation workflows. "
+                "Read-only grouping of eligible donations for later confirmation workflows. "
                 "No PDFs are generated and nothing is sent."
             )
         ),
     ],
     ctx: Context,
-) -> GiftConfirmationsResult:
-    """Prepare read-only gift confirmation groups from transaction and pledge data."""
-    return await _prepare_gift_confirmations(_client_from_context(ctx), request)
+) -> DonationConfirmationsResult:
+    """Prepare read-only donation confirmation groups from transaction and pledge data."""
+    return await _prepare_donation_confirmations(_client_from_context(ctx), request)
 
 
 @mcp.tool
@@ -756,14 +783,17 @@ async def _find_transactions(
                 ),
             )
         raws = await client.search_transactions(_transaction_params(query, offset=offset))
-        records = [
-            normalize_transaction(
-                raw,
-                include_donor_pii=query.include_donor_pii,
-                include_raw=query.include_raw,
-            )
-            for raw in raws
-        ]
+        records = _filter_transactions(
+            [
+                normalize_transaction(
+                    raw,
+                    include_donor_pii=query.include_donor_pii,
+                    include_raw=query.include_raw,
+                )
+                for raw in raws
+            ],
+            query,
+        )
         next_cursor = _next_cursor(
             "transactions", query.filter_hash(), offset, query.limit, len(raws)
         )
@@ -922,16 +952,16 @@ async def _find_promotions(
         return FindPromotionsResult(error=_error_info(exc))
 
 
-async def _prepare_gift_confirmations(
+async def _prepare_donation_confirmations(
     client: DarujmeClient,
-    request: GiftConfirmationRequest,
-) -> GiftConfirmationsResult:
+    request: DonationConfirmationRequest,
+) -> DonationConfirmationsResult:
     query = FindTransactionsQuery(
         mode="search",
         project_ids=request.project_ids,
         promotion_ids=request.promotion_ids,
-        from_received_date=request.from_received_date,
-        to_received_date=request.to_received_date,
+        received_from=request.received_from,
+        received_to=request.received_to,
         transaction_states=request.transaction_states,
         limit=request.limit,
         cursor=request.cursor,
@@ -940,7 +970,7 @@ async def _prepare_gift_confirmations(
     )
     result = await _find_transactions(client, query)
     if result.error is not None:
-        return GiftConfirmationsResult(error=result.error)
+        return DonationConfirmationsResult(error=result.error)
     groups: dict[str, ConfirmationGroup] = {}
     for transaction in result.transactions:
         if isinstance(transaction, FoundItemError):
@@ -969,7 +999,7 @@ async def _prepare_gift_confirmations(
         if sent and sent.currency and sent.amount:
             current = float(group.total_by_currency.get(sent.currency, "0"))
             group.total_by_currency[sent.currency] = f"{current + float(sent.amount):.2f}"
-    return GiftConfirmationsResult(
+    return DonationConfirmationsResult(
         groups=list(groups.values()),
         next_cursor=result.next_cursor,
         control_totals=result.control_totals,
@@ -990,12 +1020,12 @@ def _transaction_params(query: FindTransactionsQuery, *, offset: int) -> dict[st
     return {
         "projectIds[]": query.project_ids,
         "promotionIds[]": query.promotion_ids,
-        "fromReceivedDate": _api_date(query.from_received_date),
-        "toReceivedDate": _api_date(query.to_received_date),
-        "fromOutgoingDate": _api_date(query.from_outgoing_date),
-        "toOutgoingDate": _api_date(query.to_outgoing_date),
-        "fromFailedDate": _api_date(query.from_failed_date),
-        "toFailedDate": _api_date(query.to_failed_date),
+        "fromReceivedDate": _api_date(query.received_from),
+        "toReceivedDate": _api_date(query.received_to),
+        "fromOutgoingDate": _api_date(query.outgoing_from),
+        "toOutgoingDate": _api_date(query.outgoing_to),
+        "fromFailedDate": _api_date(query.failed_from),
+        "toFailedDate": _api_date(query.failed_to),
         "lastModifiedDateTime": query.last_modified_date_time,
         "transactionState[]": query.transaction_states,
         "pageSize": query.limit,
@@ -1011,10 +1041,10 @@ def _pledge_params(query: FindPledgesQuery, *, offset: int) -> dict[str, Any]:
         "projectId": project_id,
         "fromPledgedDate": _api_date(query.from_pledged_date),
         "toPledgedDate": _api_date(query.to_pledged_date),
-        "fromReceivedDate": _api_date(query.from_received_date),
-        "toReceivedDate": _api_date(query.to_received_date),
-        "fromOutgoingDate": _api_date(query.from_outgoing_date),
-        "toOutgoingDate": _api_date(query.to_outgoing_date),
+        "fromReceivedDate": _api_date(query.received_from),
+        "toReceivedDate": _api_date(query.received_to),
+        "fromOutgoingDate": _api_date(query.outgoing_from),
+        "toOutgoingDate": _api_date(query.outgoing_to),
         "lastModifiedDateTime": query.last_modified_date_time,
         "paymentMethod[]": query.payment_methods,
         "recurrentState[]": query.recurrent_states,
@@ -1023,8 +1053,74 @@ def _pledge_params(query: FindPledgesQuery, *, offset: int) -> dict[str, Any]:
     }
 
 
+def _filter_transactions(
+    records: list[DarujmeTransaction],
+    query: FindTransactionsQuery,
+) -> list[DarujmeTransaction]:
+    result = records
+    if query.outgoing_variable_symbol:
+        result = [
+            transaction
+            for transaction in result
+            if transaction.outgoing_variable_symbol == query.outgoing_variable_symbol
+        ]
+    if query.outgoing_amount is not None:
+        result = [
+            transaction
+            for transaction in result
+            if _money_amount(transaction.outgoing_amount) == query.outgoing_amount
+        ]
+    if query.outgoing_currency:
+        result = [
+            transaction
+            for transaction in result
+            if transaction.outgoing_amount is not None
+            and transaction.outgoing_amount.currency == query.outgoing_currency
+        ]
+    if query.outgoing_bank_account:
+        result = [
+            transaction
+            for transaction in result
+            if transaction.outgoing_bank_account == query.outgoing_bank_account
+        ]
+    return result
+
+
+def _money_amount(money: Any) -> Decimal | None:
+    amount = getattr(money, "amount", None)
+    if amount is None:
+        return None
+    try:
+        return Decimal(str(amount))
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def _metadata_result() -> MetadataResult:
     return MetadataResult(
+        source_documents=[
+            "https://www.darujme.cz/doc/api/v1/index.html",
+            "https://documenter.getpostman.com/view/10150431/T1LS9jWA",
+            "https://www.darujme.cz/dar/api/darujme_api.php?api_id=%s&api_secret=%s&typ_dotazu=1",
+        ],
+        comparison_fields={
+            "date_filters": [
+                "received_from",
+                "received_to",
+                "outgoing_from",
+                "outgoing_to",
+                "failed_from",
+                "failed_to",
+            ],
+            "donor_amount": "sent_amount",
+            "bank_payout_fields": [
+                "outgoing_amount",
+                "outgoing_currency",
+                "outgoing_variable_symbol",
+                "outgoing_bank_account",
+            ],
+            "control_totals": ["sent_by_currency", "outgoing_by_currency"],
+        },
         setup_tools=["darujme_login"],
         login_contract={
             "required_fields": ["api_id", "api_secret", "organization_id"],
@@ -1150,6 +1246,8 @@ def _decode_cursor_result(
 
 def _control_totals(records: list[Any]) -> ControlTotals:
     by_currency: dict[str, dict[str, str | int]] = {}
+    sent_by_currency: dict[str, dict[str, str | int]] = {}
+    outgoing_by_currency: dict[str, dict[str, str | int]] = {}
     by_state: dict[str, int] = {}
     for record in records:
         state = getattr(record, "state", None) or getattr(record.states, "state", None) or "unknown"
@@ -1159,10 +1257,25 @@ def _control_totals(records: list[Any]) -> ControlTotals:
         if amounts is not None:
             money = amounts.sent or amounts.pledged or amounts.collected_estimate or amounts.target
         if money is not None and money.currency is not None and money.amount is not None:
-            bucket = by_currency.setdefault(money.currency, {"count": 0, "amount": "0"})
-            bucket["count"] = int(bucket["count"]) + 1
-            bucket["amount"] = str(float(str(bucket["amount"])) + float(money.amount))
-    return ControlTotals(count=len(records), by_currency=by_currency, by_state=by_state)
+            _add_money_total(by_currency, money)
+        if amounts is not None:
+            _add_money_total(sent_by_currency, amounts.sent)
+            _add_money_total(outgoing_by_currency, amounts.outgoing)
+    return ControlTotals(
+        count=len(records),
+        by_currency=by_currency,
+        sent_by_currency=sent_by_currency,
+        outgoing_by_currency=outgoing_by_currency,
+        by_state=by_state,
+    )
+
+
+def _add_money_total(bucket_map: dict[str, dict[str, str | int]], money: Any) -> None:
+    if money is None or money.currency is None or money.amount is None:
+        return
+    bucket = bucket_map.setdefault(money.currency, {"count": 0, "amount": "0"})
+    bucket["count"] = int(bucket["count"]) + 1
+    bucket["amount"] = f"{float(str(bucket['amount'])) + float(money.amount):.2f}"
 
 
 def _donor_key(donor: dict[str, Any], pledge_id: int | None) -> str:
@@ -1184,6 +1297,11 @@ def _validate_ids_mode(mode: str, ids: list[int], label: str) -> None:
             raise ValueError(f"{label} are required when mode is by_ids")
     elif ids:
         raise ValueError(f"{label} are only allowed when mode is by_ids")
+
+
+def _validate_date_range(start: date | None, end: date | None, label: str) -> None:
+    if start is not None and end is not None and end < start:
+        raise ValueError(f"{label}_to must be on or after {label}_from")
 
 
 def _filter_hash(payload: dict[str, Any]) -> str:

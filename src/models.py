@@ -92,7 +92,7 @@ class DarujmeTransaction(BaseModel):
     sent_amount: Money | None = None
     received_at: str | None = None
     outgoing_amount: Money | None = None
-    outgoing_vs: str | None = None
+    outgoing_variable_symbol: str | None = None
     outgoing_bank_account: str | None = None
     last_modified_at: str | None = None
     dates: DarujmeDates = Field(default_factory=DarujmeDates)
@@ -180,6 +180,8 @@ class FoundItemError(BaseModel):
 class ControlTotals(BaseModel):
     count: int
     by_currency: dict[str, dict[str, str | int]] = Field(default_factory=dict)
+    sent_by_currency: dict[str, dict[str, str | int]] = Field(default_factory=dict)
+    outgoing_by_currency: dict[str, dict[str, str | int]] = Field(default_factory=dict)
     by_state: dict[str, int] = Field(default_factory=dict)
 
 

@@ -10,7 +10,7 @@
 
 ## Read-Only Boundary
 
-V1 excludes Darujme write endpoints, including pledge custom-field updates and promotion creation. `darujme_prepare_gift_confirmations` only groups data already returned by read endpoints; it does not create PDFs, send emails, or update Darujme.
+V1 excludes Darujme write endpoints, including pledge custom-field updates and promotion creation. `darujme_prepare_donation_confirmations` only groups data already returned by read endpoints; it does not create PDFs, send emails, or update Darujme.
 
 ## Login Contract
 
@@ -33,4 +33,10 @@ Records expose common fields that agents can compose with other systems:
 - `project`, `promotion`, `donor`
 - `raw` when explicitly requested
 
-Transaction records also preserve Darujme-native fields such as `transaction_id`, `presentable_code`, `state`, `sent_amount`, `received_at`, `outgoing_amount`, `outgoing_vs`, `outgoing_bank_account`, and `last_modified_at`.
+Transaction records also preserve Darujme-native fields such as `transaction_id`, `presentable_code`, `state`, `sent_amount`, `received_at`, `outgoing_amount`, `outgoing_variable_symbol`, `outgoing_bank_account`, and `last_modified_at`.
+
+Search tool dates use `*_from` and `*_to` field names consistently:
+`received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
+`failed_from`, and `failed_to`. These fields map directly to Darujme's
+`fromReceivedDate`, `toReceivedDate`, `fromOutgoingDate`, `toOutgoingDate`,
+`fromFailedDate`, and `toFailedDate` API parameters.

@@ -44,10 +44,17 @@ mise run mcp-reload
 - `darujme_find_pledges`: `mode: "search" | "by_ids" | "by_vs"`.
 - `darujme_find_projects`: `mode: "search" | "by_ids"`.
 - `darujme_find_promotions`: `mode: "search" | "by_ids"`.
-- `darujme_prepare_gift_confirmations`: read-only grouping for later confirmation workflows.
+- `darujme_prepare_donation_confirmations`: read-only grouping for later confirmation workflows.
 - `darujme_get_metadata`: states, modes, privacy, limits, and error metadata.
 
 Donor PII is redacted by default. Set `include_donor_pii=true` to return names, contacts, addresses, company IDs, custom fields, and confirmation recipient fields. `include_raw=true` requires `include_donor_pii=true`.
+
+Date filters use the same `*_from` / `*_to` naming style as the sibling MCPs:
+`received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
+`failed_from`, and `failed_to`. Darujme payout fields use
+`outgoing_variable_symbol`, `outgoing_amount`, `outgoing_currency`, and
+`outgoing_bank_account`; the old Darujme API abbreviation `outgoing_vs` is not
+part of the tool contract.
 
 ## Checks
 
