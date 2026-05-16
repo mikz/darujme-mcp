@@ -19,7 +19,15 @@ DARUJME_API_SECRET=...
 DARUJME_ORGANIZATION_ID=...
 ```
 
-or with the `darujme_login` MCP form tool. `DARUJME_ORGANIZATION_ID` is part of the login contract because Darujme API v1 requires `organizationId` in organization-scoped URLs and does not expose token introspection or organization discovery. Stored credentials are scoped to the canonical server process `cwd`: OS keyring service `darujme-mcp:<scope-id>` when available, plus `${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/scopes/<scope-id>/credentials.env` with mode `0600`. Legacy unscoped stores are not read.
+or with the `darujme_login` MCP tool. It supports `mode: "auto" | "direct" |
+"prefab" | "web"`: Apps-capable clients get an inline Prefab form, while
+clients such as Codex can use direct arguments or a localhost web form.
+`DARUJME_ORGANIZATION_ID` is part of the login contract because Darujme API v1
+requires `organizationId` in organization-scoped URLs and does not expose token
+introspection or organization discovery. Stored credentials are scoped to the
+canonical server process `cwd`: OS keyring service `darujme-mcp:<scope-id>` when
+available, plus `${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/scopes/<scope-id>/credentials.env`
+with mode `0600`. Legacy unscoped stores are not read.
 
 ## Run
 
@@ -30,7 +38,7 @@ mise run mcp-reload
 
 ## Tools
 
-- `darujme_login`: stores and validates required `api_id`, `api_secret`, and `organization_id`.
+- `darujme_login`: stores and validates required `api_id`, `api_secret`, and `organization_id` using `auto`, `direct`, `prefab`, or `web` mode.
 - `darujme_test_connection`: safe read-only credential check.
 - `darujme_find_transactions`: `mode: "search" | "by_ids"`.
 - `darujme_find_pledges`: `mode: "search" | "by_ids" | "by_vs"`.

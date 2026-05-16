@@ -71,7 +71,7 @@ def test_pledge_search_uses_documented_project_filter() -> None:
     assert params["offset"] == 25
 
 
-async def test_exposed_login_is_form_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exposed_login_is_unified_login_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(server_module, "load_settings", settings)
 
     async with Client(server_module.mcp) as client:
@@ -79,8 +79,11 @@ async def test_exposed_login_is_form_tool(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert "darujme_login" in tools
     properties = tools["darujme_login"].inputSchema["properties"]
-    assert "api_secret" not in properties
-    assert {"prompt", "title", "submit_text", "default"} <= set(properties)
+    assert properties["mode"]["enum"] == ["auto", "direct", "prefab", "web"]
+    assert set(properties) == {"mode", "credentials"}
+    credentials_schema = properties["credentials"]["anyOf"][0]
+    assert credentials_schema["required"] == ["api_id", "api_secret", "organization_id"]
+    assert "api_secret" in credentials_schema["properties"]
 
 
 @respx.mock

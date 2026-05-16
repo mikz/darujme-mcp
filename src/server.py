@@ -5,16 +5,24 @@ import base64
 import functools
 import hashlib
 import json
+import secrets
+import threading
 from datetime import date
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Annotated, Any, Literal
+from urllib.parse import parse_qs
 
 import httpx
 from fastmcp import FastMCP
 from fastmcp.apps import UI_EXTENSION_ID
-from fastmcp.apps.form import FormInput
 from fastmcp.exceptions import ToolError
 from fastmcp.server.context import Context
 from fastmcp.server.lifespan import lifespan
+from prefab_ui.actions import Fetch, SetState, ShowToast
+from prefab_ui.actions.mcp import CallTool
+from prefab_ui.app import PrefabApp
+from prefab_ui.components import Button, Column, Form, Heading, Input, Muted, Text
+from prefab_ui.rx import Rx
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from client import DarujmeClient, DarujmeError, NotAuthenticatedError
@@ -68,6 +76,9 @@ async def app_lifespan(_server: FastMCP):
 
 
 mcp = FastMCP("Darujme", lifespan=app_lifespan)
+LoginMode = Literal["auto", "direct", "prefab", "web"]
+ResolvedLoginMode = Literal["direct", "prefab", "web"]
+_WEB_LOGIN_SERVERS: dict[str, ThreadingHTTPServer] = {}
 
 
 class DarujmeLogin(BaseModel):
@@ -82,6 +93,16 @@ class DarujmeLogin(BaseModel):
         ),
         ge=1,
     )
+
+
+class LoginResult(BaseModel):
+    ok: bool
+    mode: ResolvedLoginMode
+    status: Literal["logged_in", "needs_input", "unsupported", "error"]
+    message: str
+    url: str | None = None
+    transport: str | None = None
+    ui_supported: bool = False
 
 
 class SearchCursor(BaseModel):
@@ -382,15 +403,196 @@ def _login_on_submit(login: DarujmeLogin) -> str:
     )
 
 
-mcp.add_provider(
-    FormInput(
-        model=DarujmeLogin,
-        tool_name="darujme_login",
-        title="Sign in to Darujme",
-        submit_text="Sign in",
-        on_submit=_login_on_submit,
+async def darujme_login(
+    ctx: Context,
+    mode: LoginMode = "auto",
+    credentials: Annotated[
+        DarujmeLogin | None,
+        Field(
+            description=(
+                "Credentials for mode=direct. Omit for auto, prefab, or web. "
+                "Direct mode sends secrets through the MCP tool call."
+            )
+        ),
+    ] = None,
+) -> LoginResult | PrefabApp:
+    """Sign in to Darujme using auto, direct, Prefab UI, or localhost web login."""
+    selected = _resolve_login_mode(ctx, mode)
+    if selected == "prefab":
+        if not ctx.client_supports_extension(UI_EXTENSION_ID):
+            return _login_result(
+                ctx,
+                mode="prefab",
+                status="unsupported",
+                message="This MCP client does not advertise the Apps UI extension.",
+                ok=False,
+            )
+        return _darujme_login_prefab_app()
+    if selected == "web":
+        url = _start_darujme_web_login()
+        return _login_result(
+            ctx,
+            mode="web",
+            status="needs_input",
+            message=f"Open this local URL in a browser to sign in to Darujme: {url}",
+            ok=True,
+            url=url,
+        )
+    if credentials is None:
+        return _login_result(
+            ctx,
+            mode="direct",
+            status="error",
+            message=(
+                "mode=direct requires credentials.api_id, credentials.api_secret, "
+                "and credentials.organization_id."
+            ),
+            ok=False,
+        )
+    return _login_result_from_submit(ctx, "direct", _login_on_submit(credentials))
+
+
+def _resolve_login_mode(ctx: Context, mode: LoginMode) -> ResolvedLoginMode:
+    if mode != "auto":
+        return mode
+    if ctx.client_supports_extension(UI_EXTENSION_ID):
+        return "prefab"
+    return "web"
+
+
+def _login_result(
+    ctx: Context,
+    *,
+    mode: ResolvedLoginMode,
+    status: Literal["logged_in", "needs_input", "unsupported", "error"],
+    message: str,
+    ok: bool,
+    url: str | None = None,
+) -> LoginResult:
+    return LoginResult(
+        ok=ok,
+        mode=mode,
+        status=status,
+        message=message,
+        url=url,
+        transport=ctx.transport,
+        ui_supported=ctx.client_supports_extension(UI_EXTENSION_ID),
     )
-)
+
+
+def _login_result_from_submit(ctx: Context, mode: ResolvedLoginMode, message: str) -> LoginResult:
+    ok = message.startswith("Logged in to Darujme organization")
+    return _login_result(
+        ctx,
+        mode=mode,
+        status="logged_in" if ok else "error",
+        message=message,
+        ok=ok,
+    )
+
+
+def _darujme_login_prefab_app(web_submit_url: str | None = None) -> PrefabApp:
+    credentials = {
+        "api_id": Rx("api_id"),
+        "api_secret": Rx("api_secret"),
+        "organization_id": Rx("organization_id"),
+    }
+    if web_submit_url:
+        submit_action = Fetch(
+            web_submit_url,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+            body=credentials,
+            onSuccess=[
+                SetState("message", "{{ $result.message }}"),
+                ShowToast("{{ $result.message }}", variant="success"),
+            ],
+            onError=ShowToast("Darujme login failed.", variant="error"),
+        )
+    else:
+        submit_action = CallTool(
+            "darujme_login",
+            arguments={"mode": "direct", "credentials": credentials},
+            onSuccess=[
+                SetState("message", "{{ $result.message }}"),
+                ShowToast("{{ $result.message }}", variant="success"),
+            ],
+            onError=ShowToast("Darujme login failed.", variant="error"),
+        )
+
+    with Column(gap=4, css_class="p-6 max-w-md") as view:
+        Heading("Sign in to Darujme", level=2)
+        Muted("Credentials are validated with Darujme and stored locally for this MCP scope.")
+        with Form(onSubmit=submit_action):
+            Input(name="api_id", placeholder="API ID", required=True)
+            Input(name="api_secret", inputType="password", placeholder="API secret", required=True)
+            Input(
+                name="organization_id",
+                inputType="number",
+                placeholder="Organization ID",
+                required=True,
+                min=1,
+            )
+            Button("Sign in", buttonType="submit")
+        Text(content=Rx("message"))
+    return PrefabApp(title="Darujme Login", view=view, state={"message": ""})
+
+
+class _DarujmeLoginHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        server = self.server
+        token = getattr(server, "login_token", "")
+        if self.path.rstrip("/") != f"/{token}":
+            self.send_error(404)
+            return
+        submit_url = f"http://127.0.0.1:{server.server_port}/{token}/submit"
+        html = _darujme_login_prefab_app(submit_url).html()
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        server = self.server
+        token = getattr(server, "login_token", "")
+        if self.path != f"/{token}/submit":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode("utf-8")
+        try:
+            if "application/json" in self.headers.get("Content-Type", ""):
+                payload = json.loads(raw or "{}")
+            else:
+                parsed = parse_qs(raw)
+                payload = {key: values[-1] for key, values in parsed.items()}
+            message = _login_on_submit(DarujmeLogin.model_validate(payload))
+            ok = message.startswith("Logged in to Darujme organization")
+            self._send_json({"ok": ok, "message": message})
+        except Exception as exc:
+            self._send_json({"ok": False, "message": str(exc)}, status=400)
+
+    def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        return
+
+
+def _start_darujme_web_login() -> str:
+    token = secrets.token_urlsafe(24)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _DarujmeLoginHandler)
+    server.login_token = token  # type: ignore[attr-defined]
+    _WEB_LOGIN_SERVERS[token] = server
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}/{token}"
 
 
 def _requires_login(fn):
@@ -407,13 +609,13 @@ def _requires_login(fn):
         client: DarujmeClient = ctx.lifespan_context["darujme_client"]
         if not client.is_authenticated():
             hint = (
-                "Not signed in to Darujme. Call the `darujme_login` tool first; "
-                "the user will be prompted for api_id, api_secret, and organization_id."
+                "Not signed in to Darujme. Call the `darujme_login` tool first. "
+                "It supports auto, direct, Prefab, and web login modes."
             )
             if not ctx.client_supports_extension(UI_EXTENSION_ID):
                 hint += (
-                    " This client does not render inline forms; credentials can also be set "
-                    "with DARUJME_API_ID, DARUJME_API_SECRET, and DARUJME_ORGANIZATION_ID, "
+                    " This client does not render inline forms; use mode=web or mode=direct, "
+                    "set DARUJME_API_ID, DARUJME_API_SECRET, and DARUJME_ORGANIZATION_ID, "
                     "or pre-seeded in the cwd-scoped credential store."
                 )
             raise ToolError(hint)
@@ -1001,6 +1203,9 @@ def _error_info(exc: Exception) -> ErrorInfo:
 
 def main() -> None:
     asyncio.run(mcp.run_async())
+
+
+mcp.tool(darujme_login, app=True)
 
 
 if __name__ == "__main__":

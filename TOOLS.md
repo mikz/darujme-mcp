@@ -2,7 +2,13 @@
 
 ## `darujme_login`
 
-FastMCP Apps form. Requires `api_id`, `api_secret`, and `organization_id`, validates with `GET /organization/{organizationId}/projects`, then stores credentials in the cwd-scoped local credential store. The organization ID is required because Darujme API v1 does not expose token introspection or organization discovery.
+Unified login tool. `mode` accepts `auto`, `direct`, `prefab`, or `web`.
+`auto` uses Prefab when the MCP client advertises Apps UI support, otherwise it
+returns a localhost web-login URL. `direct` accepts `api_id`, `api_secret`, and
+`organization_id` in the `credentials` object. The server validates with
+`GET /organization/{organizationId}/projects`, then stores credentials in the
+cwd-scoped local credential store. The organization ID is required because
+Darujme API v1 does not expose token introspection or organization discovery.
 
 ## `darujme_test_connection`
 
