@@ -20,22 +20,27 @@ Returns:
 
 ## `darujme_find_transactions`
 
-Query modes:
+Query variants use `query_type` as a schema discriminator:
 
-- `search`: calls `GET /organization/{organizationId}/transactions-by-filter`.
-- `by_ids`: calls `GET /organization/{organizationId}/transaction/{transactionId}` for each ID and itemizes errors.
+- `transaction_search`: calls `GET /organization/{organizationId}/transactions-by-filter`.
+- `transaction_by_ids`: calls `GET /organization/{organizationId}/transaction/{transactionId}` for each ID and itemizes errors.
+- `settlement_aggregate`: calls `transactions-by-filter` per settled day and returns aggregate rows grouped by outgoing bank account, outgoing variable symbol, and currency.
 
-Search filters include project IDs, promotion IDs, received/outgoing/failed dates, last modified timestamp, transaction states, `limit`, and `cursor`.
+Transaction search filters include project IDs, promotion IDs,
+received/outgoing/failed dates, last modified timestamp, transaction states,
+`limit`, and `cursor`.
 
-Date filters use `received_from`, `received_to`, `outgoing_from`,
+Transaction date filters use `received_from`, `received_to`, `outgoing_from`,
 `outgoing_to`, `failed_from`, and `failed_to`. These are translated to the
 Darujme API parameters `fromReceivedDate`, `toReceivedDate`,
 `fromOutgoingDate`, `toOutgoingDate`, `fromFailedDate`, and `toFailedDate`.
 
-Payout matching fields are exposed with full names:
-`outgoing_variable_symbol`, `outgoing_amount`, `outgoing_currency`, and
-`outgoing_bank_account`. `outgoing_variable_symbol` maps Darujme's native
-`outgoingVs` response property.
+Settlement aggregate queries use `settled_from` and `settled_to`; the MCP maps
+each day to Darujme's outgoing date filter because Darujme does not return a
+reliable outgoing date field on transactions. Aggregate rows expose
+`settled_date`, `outgoing_bank_account`, `outgoing_variable_symbol`, `currency`,
+`outgoing_total`, `sent_total`, `fee_total`, `transaction_count`, and
+`transaction_ids`.
 
 `control_totals` includes `sent_by_currency` and `outgoing_by_currency` so the
 donor-sent amount and organization payout amount are visible separately.

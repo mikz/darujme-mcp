@@ -7,7 +7,7 @@ import hashlib
 import json
 import secrets
 import threading
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Annotated, Any, Literal
@@ -29,11 +29,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from client import DarujmeClient, DarujmeError, NotAuthenticatedError
 from models import (
     ControlTotals,
+    DarujmeSettlementAggregate,
     DarujmeTransaction,
     ErrorInfo,
     FindPledgesResult,
     FindProjectsResult,
     FindPromotionsResult,
+    FindSettlementAggregatesResult,
     FindTransactionsResult,
     FoundItemError,
     TestConnectionResult,
@@ -47,6 +49,7 @@ from normalization import (
 from settings import load_settings, store_credentials
 
 MAX_PAGE_LIMIT = 500
+MAX_SETTLEMENT_RANGE_DAYS = 31
 _LIVE_CLIENT: DarujmeClient | None = None
 
 TransactionState = Literal[
@@ -109,7 +112,7 @@ class LoginResult(BaseModel):
 
 class SearchCursor(BaseModel):
     v: int = 1
-    kind: Literal["transactions", "pledges", "projects", "promotions"]
+    kind: Literal["transactions", "settlements", "pledges", "projects", "promotions"]
     offset: int
     filter_hash: str
 
@@ -134,28 +137,24 @@ class PrivacyMixin(BaseModel):
         return self
 
 
-class FindTransactionsQuery(PrivacyMixin):
+class TransactionSearchQuery(PrivacyMixin):
     model_config = ConfigDict(
         extra="forbid",
         json_schema_extra={
             "examples": [
                 {
-                    "mode": "search",
+                    "query_type": "transaction_search",
                     "received_from": "2026-05-01",
                     "received_to": "2026-05-16",
                     "transaction_states": ["success", "sent_to_organization"],
                     "limit": 100,
                     "include_donor_pii": False,
                 },
-                {"mode": "by_ids", "ids": [1203450], "include_donor_pii": False},
             ]
         },
     )
 
-    mode: Literal["search", "by_ids"] = Field(
-        description='Use "search" with filters or "by_ids" for known transaction IDs.'
-    )
-    ids: list[int] = Field(default_factory=list, max_length=100)
+    query_type: Literal["transaction_search"]
     project_ids: list[int] = Field(default_factory=list)
     promotion_ids: list[int] = Field(default_factory=list)
     received_from: date | None = None
@@ -164,18 +163,13 @@ class FindTransactionsQuery(PrivacyMixin):
     outgoing_to: date | None = None
     failed_from: date | None = None
     failed_to: date | None = None
-    outgoing_variable_symbol: str | None = None
-    outgoing_amount: Decimal | None = None
-    outgoing_currency: str | None = None
-    outgoing_bank_account: str | None = None
     last_modified_date_time: str | None = None
     transaction_states: list[TransactionState] = Field(default_factory=list)
     limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
     cursor: str | None = None
 
     @model_validator(mode="after")
-    def validate_mode(self) -> FindTransactionsQuery:
-        _validate_ids_mode(self.mode, self.ids, "ids")
+    def validate_dates(self) -> TransactionSearchQuery:
         _validate_date_range(self.received_from, self.received_to, "received")
         _validate_date_range(self.outgoing_from, self.outgoing_to, "outgoing")
         _validate_date_range(self.failed_from, self.failed_to, "failed")
@@ -184,8 +178,7 @@ class FindTransactionsQuery(PrivacyMixin):
     def filter_hash(self) -> str:
         return _filter_hash(
             {
-                "mode": self.mode,
-                "ids": self.ids,
+                "query_type": self.query_type,
                 "project_ids": sorted(self.project_ids),
                 "promotion_ids": sorted(self.promotion_ids),
                 "received_from": _api_date(self.received_from),
@@ -194,18 +187,103 @@ class FindTransactionsQuery(PrivacyMixin):
                 "outgoing_to": _api_date(self.outgoing_to),
                 "failed_from": _api_date(self.failed_from),
                 "failed_to": _api_date(self.failed_to),
-                "outgoing_variable_symbol": self.outgoing_variable_symbol,
-                "outgoing_amount": str(self.outgoing_amount)
-                if self.outgoing_amount is not None
-                else None,
-                "outgoing_currency": self.outgoing_currency,
-                "outgoing_bank_account": self.outgoing_bank_account,
                 "last_modified_date_time": self.last_modified_date_time,
                 "transaction_states": sorted(self.transaction_states),
                 "include_donor_pii": self.include_donor_pii,
                 "include_raw": self.include_raw,
             }
         )
+
+
+class TransactionByIdsQuery(PrivacyMixin):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "query_type": "transaction_by_ids",
+                    "ids": [1203450],
+                    "include_donor_pii": False,
+                }
+            ]
+        },
+    )
+
+    query_type: Literal["transaction_by_ids"]
+    ids: list[int] = Field(min_length=1, max_length=100)
+
+    def filter_hash(self) -> str:
+        return _filter_hash(
+            {
+                "query_type": self.query_type,
+                "ids": self.ids,
+                "include_donor_pii": self.include_donor_pii,
+                "include_raw": self.include_raw,
+            }
+        )
+
+
+class SettlementAggregateQuery(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "query_type": "settlement_aggregate",
+                    "settled_from": "2026-03-01",
+                    "settled_to": "2026-03-31",
+                    "outgoing_currency": "CZK",
+                    "limit": 100,
+                }
+            ]
+        },
+    )
+
+    query_type: Literal["settlement_aggregate"]
+    settled_from: date
+    settled_to: date
+    outgoing_bank_account: str | None = None
+    outgoing_variable_symbol: str | None = None
+    outgoing_currency: str | None = None
+    outgoing_total: Decimal | None = None
+    project_ids: list[int] = Field(default_factory=list)
+    promotion_ids: list[int] = Field(default_factory=list)
+    transaction_states: list[Literal["sent_to_organization"]] = Field(
+        default_factory=lambda: ["sent_to_organization"]
+    )
+    limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
+    cursor: str | None = None
+
+    @model_validator(mode="after")
+    def validate_dates(self) -> SettlementAggregateQuery:
+        _validate_date_range(self.settled_from, self.settled_to, "settled")
+        if (self.settled_to - self.settled_from).days + 1 > MAX_SETTLEMENT_RANGE_DAYS:
+            raise ValueError(f"settled date range cannot exceed {MAX_SETTLEMENT_RANGE_DAYS} days")
+        return self
+
+    def filter_hash(self) -> str:
+        return _filter_hash(
+            {
+                "query_type": self.query_type,
+                "settled_from": _api_date(self.settled_from),
+                "settled_to": _api_date(self.settled_to),
+                "outgoing_bank_account": self.outgoing_bank_account,
+                "outgoing_variable_symbol": self.outgoing_variable_symbol,
+                "outgoing_currency": self.outgoing_currency,
+                "outgoing_total": str(self.outgoing_total)
+                if self.outgoing_total is not None
+                else None,
+                "project_ids": sorted(self.project_ids),
+                "promotion_ids": sorted(self.promotion_ids),
+                "transaction_states": sorted(self.transaction_states),
+            }
+        )
+
+
+FindTransactionsQuery = Annotated[
+    TransactionSearchQuery | TransactionByIdsQuery | SettlementAggregateQuery,
+    Field(discriminator="query_type"),
+]
 
 
 class FindPledgesQuery(PrivacyMixin):
@@ -384,6 +462,7 @@ class MetadataEntry(BaseModel):
 
 class MetadataLimits(BaseModel):
     max_page_limit: int
+    max_settlement_range_days: int
     cursor_pagination: str
 
 
@@ -666,8 +745,8 @@ async def darujme_find_transactions(
         Field(description="Object query for Darujme transactions. Pass an object, not a string."),
     ],
     ctx: Context,
-) -> FindTransactionsResult:
-    """Find Darujme transactions by search filters or known transaction IDs."""
+) -> FindTransactionsResult | FindSettlementAggregatesResult:
+    """Find Darujme transactions or settlement aggregate rows."""
     return await _find_transactions(_client_from_context(ctx), query)
 
 
@@ -753,20 +832,11 @@ async def _test_connection(client: DarujmeClient) -> TestConnectionResult:
 async def _find_transactions(
     client: DarujmeClient,
     query: FindTransactionsQuery,
-) -> FindTransactionsResult:
-    if query.cursor:
-        cursor_result = _decode_cursor_result(
-            query.cursor,
-            kind="transactions",
-            filter_hash=query.filter_hash(),
-        )
-        if isinstance(cursor_result, ErrorInfo):
-            return FindTransactionsResult(error=cursor_result)
-        offset = cursor_result.offset
-    else:
-        offset = 0
-    try:
-        if query.mode == "by_ids":
+) -> FindTransactionsResult | FindSettlementAggregatesResult:
+    if isinstance(query, SettlementAggregateQuery):
+        return await _find_settlement_aggregates(client, query)
+    if isinstance(query, TransactionByIdsQuery):
+        try:
             records = await _fetch_by_ids(
                 query.ids,
                 client.get_transaction,
@@ -782,18 +852,29 @@ async def _find_transactions(
                     [item for item in records if not isinstance(item, FoundItemError)]
                 ),
             )
-        raws = await client.search_transactions(_transaction_params(query, offset=offset))
-        records = _filter_transactions(
-            [
-                normalize_transaction(
-                    raw,
-                    include_donor_pii=query.include_donor_pii,
-                    include_raw=query.include_raw,
-                )
-                for raw in raws
-            ],
-            query,
+        except Exception as exc:
+            return FindTransactionsResult(error=_error_info(exc))
+    if query.cursor:
+        cursor_result = _decode_cursor_result(
+            query.cursor,
+            kind="transactions",
+            filter_hash=query.filter_hash(),
         )
+        if isinstance(cursor_result, ErrorInfo):
+            return FindTransactionsResult(error=cursor_result)
+        offset = cursor_result.offset
+    else:
+        offset = 0
+    try:
+        raws = await client.search_transactions(_transaction_params(query, offset=offset))
+        records = [
+            normalize_transaction(
+                raw,
+                include_donor_pii=query.include_donor_pii,
+                include_raw=query.include_raw,
+            )
+            for raw in raws
+        ]
         next_cursor = _next_cursor(
             "transactions", query.filter_hash(), offset, query.limit, len(raws)
         )
@@ -804,6 +885,80 @@ async def _find_transactions(
         )
     except Exception as exc:
         return FindTransactionsResult(error=_error_info(exc))
+
+
+async def _find_settlement_aggregates(
+    client: DarujmeClient,
+    query: SettlementAggregateQuery,
+) -> FindSettlementAggregatesResult:
+    if query.cursor:
+        cursor_result = _decode_cursor_result(
+            query.cursor,
+            kind="settlements",
+            filter_hash=query.filter_hash(),
+        )
+        if isinstance(cursor_result, ErrorInfo):
+            return FindSettlementAggregatesResult(error=cursor_result)
+        offset = cursor_result.offset
+    else:
+        offset = 0
+    try:
+        records: list[DarujmeTransaction] = []
+        current = query.settled_from
+        while current <= query.settled_to:
+            day_records = await _fetch_settlement_transactions_for_day(client, query, current)
+            records.extend(day_records)
+            current += timedelta(days=1)
+
+        settlements = _aggregate_settlements(records)
+        settlements = _filter_settlement_aggregates(settlements, query)
+        page = settlements[offset : offset + query.limit]
+        next_cursor = _next_cursor_from_total(
+            "settlements", query.filter_hash(), offset, query.limit, len(settlements)
+        )
+        return FindSettlementAggregatesResult(
+            settlements=page,
+            next_cursor=next_cursor,
+            control_totals=_settlement_control_totals(page),
+        )
+    except Exception as exc:
+        return FindSettlementAggregatesResult(error=_error_info(exc))
+
+
+async def _fetch_settlement_transactions_for_day(
+    client: DarujmeClient,
+    query: SettlementAggregateQuery,
+    day: date,
+) -> list[DarujmeTransaction]:
+    records: list[DarujmeTransaction] = []
+    offset = 0
+    while True:
+        raws = await client.search_transactions(
+            {
+                "projectIds[]": query.project_ids,
+                "promotionIds[]": query.promotion_ids,
+                "fromOutgoingDate": _api_date(day),
+                "toOutgoingDate": _api_date(day),
+                "transactionState[]": query.transaction_states,
+                "pageSize": MAX_PAGE_LIMIT,
+                "offset": offset,
+            }
+        )
+        records.extend(
+            normalize_transaction(raw, include_donor_pii=False, include_raw=False) for raw in raws
+        )
+        if len(raws) < MAX_PAGE_LIMIT:
+            break
+        offset += MAX_PAGE_LIMIT
+    return [_with_settled_date(record, day) for record in records]
+
+
+def _with_settled_date(transaction: DarujmeTransaction, day: date) -> DarujmeTransaction:
+    return transaction.model_copy(
+        update={
+            "dates": transaction.dates.model_copy(update={"outgoing_at": _api_date(day)}),
+        }
+    )
 
 
 async def _find_pledges(client: DarujmeClient, query: FindPledgesQuery) -> FindPledgesResult:
@@ -956,8 +1111,8 @@ async def _prepare_donation_confirmations(
     client: DarujmeClient,
     request: DonationConfirmationRequest,
 ) -> DonationConfirmationsResult:
-    query = FindTransactionsQuery(
-        mode="search",
+    query = TransactionSearchQuery(
+        query_type="transaction_search",
         project_ids=request.project_ids,
         promotion_ids=request.promotion_ids,
         received_from=request.received_from,
@@ -1016,7 +1171,7 @@ async def _fetch_by_ids(ids: list[int], getter: Any, normalizer: Any) -> list[An
     return records
 
 
-def _transaction_params(query: FindTransactionsQuery, *, offset: int) -> dict[str, Any]:
+def _transaction_params(query: TransactionSearchQuery, *, offset: int) -> dict[str, Any]:
     return {
         "projectIds[]": query.project_ids,
         "promotionIds[]": query.promotion_ids,
@@ -1053,35 +1208,93 @@ def _pledge_params(query: FindPledgesQuery, *, offset: int) -> dict[str, Any]:
     }
 
 
-def _filter_transactions(
-    records: list[DarujmeTransaction],
-    query: FindTransactionsQuery,
-) -> list[DarujmeTransaction]:
-    result = records
-    if query.outgoing_variable_symbol:
-        result = [
-            transaction
-            for transaction in result
-            if transaction.outgoing_variable_symbol == query.outgoing_variable_symbol
-        ]
-    if query.outgoing_amount is not None:
-        result = [
-            transaction
-            for transaction in result
-            if _money_amount(transaction.outgoing_amount) == query.outgoing_amount
-        ]
-    if query.outgoing_currency:
-        result = [
-            transaction
-            for transaction in result
-            if transaction.outgoing_amount is not None
-            and transaction.outgoing_amount.currency == query.outgoing_currency
-        ]
+def _aggregate_settlements(records: list[DarujmeTransaction]) -> list[DarujmeSettlementAggregate]:
+    groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for transaction in records:
+        settled_date = transaction.dates.outgoing_at
+        outgoing = transaction.outgoing_amount
+        sent = transaction.sent_amount
+        if (
+            settled_date is None
+            or outgoing is None
+            or outgoing.amount is None
+            or outgoing.currency is None
+            or transaction.outgoing_bank_account is None
+            or transaction.outgoing_variable_symbol is None
+        ):
+            continue
+        key = (
+            settled_date,
+            transaction.outgoing_bank_account,
+            transaction.outgoing_variable_symbol,
+            outgoing.currency,
+        )
+        group = groups.setdefault(
+            key,
+            {
+                "outgoing_total": Decimal("0"),
+                "sent_total": Decimal("0"),
+                "transaction_ids": [],
+            },
+        )
+        group["outgoing_total"] += Decimal(outgoing.amount)
+        if sent is not None and sent.amount is not None:
+            group["sent_total"] += Decimal(sent.amount)
+        group["transaction_ids"].append(transaction.transaction_id)
+
+    settlements: list[DarujmeSettlementAggregate] = []
+    for (settled_date, account, variable_symbol, currency), values in groups.items():
+        outgoing_total = values["outgoing_total"]
+        sent_total = values["sent_total"]
+        settlements.append(
+            DarujmeSettlementAggregate(
+                settled_date=settled_date,
+                outgoing_bank_account=account,
+                outgoing_variable_symbol=variable_symbol,
+                currency=currency,
+                outgoing_total=_format_money(outgoing_total),
+                sent_total=_format_money(sent_total),
+                fee_total=_format_money(sent_total - outgoing_total),
+                transaction_count=len(values["transaction_ids"]),
+                transaction_ids=values["transaction_ids"],
+            )
+        )
+    return sorted(
+        settlements,
+        key=lambda item: (
+            item.settled_date,
+            item.outgoing_bank_account,
+            item.outgoing_variable_symbol,
+            item.currency,
+        ),
+    )
+
+
+def _filter_settlement_aggregates(
+    settlements: list[DarujmeSettlementAggregate],
+    query: SettlementAggregateQuery,
+) -> list[DarujmeSettlementAggregate]:
+    result = settlements
     if query.outgoing_bank_account:
         result = [
-            transaction
-            for transaction in result
-            if transaction.outgoing_bank_account == query.outgoing_bank_account
+            settlement
+            for settlement in result
+            if settlement.outgoing_bank_account == query.outgoing_bank_account
+        ]
+    if query.outgoing_variable_symbol:
+        result = [
+            settlement
+            for settlement in result
+            if settlement.outgoing_variable_symbol == query.outgoing_variable_symbol
+        ]
+    if query.outgoing_currency:
+        currency = query.outgoing_currency.upper()
+        result = [settlement for settlement in result if settlement.currency.upper() == currency]
+    if query.outgoing_total is not None:
+        result = [
+            settlement
+            for settlement in result
+            if Decimal(settlement.outgoing_total) == query.outgoing_total
         ]
     return result
 
@@ -1094,6 +1307,10 @@ def _money_amount(money: Any) -> Decimal | None:
         return Decimal(str(amount))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _format_money(amount: Decimal) -> str:
+    return str(amount.quantize(Decimal("0.01")))
 
 
 def _metadata_result() -> MetadataResult:
@@ -1112,12 +1329,24 @@ def _metadata_result() -> MetadataResult:
                 "failed_from",
                 "failed_to",
             ],
+            "settlement_date_filters": ["settled_from", "settled_to"],
             "donor_amount": "sent_amount",
             "bank_payout_fields": [
                 "outgoing_amount",
                 "outgoing_currency",
                 "outgoing_variable_symbol",
                 "outgoing_bank_account",
+            ],
+            "settlement_aggregate_fields": [
+                "settled_date",
+                "outgoing_bank_account",
+                "outgoing_variable_symbol",
+                "currency",
+                "outgoing_total",
+                "sent_total",
+                "fee_total",
+                "transaction_count",
+                "transaction_ids",
             ],
             "control_totals": ["sent_by_currency", "outgoing_by_currency"],
         },
@@ -1135,7 +1364,11 @@ def _metadata_result() -> MetadataResult:
             ),
         },
         query_modes={
-            "darujme_find_transactions": ["search", "by_ids"],
+            "darujme_find_transactions": [
+                "transaction_search",
+                "transaction_by_ids",
+                "settlement_aggregate",
+            ],
             "darujme_find_pledges": ["search", "by_ids", "by_vs"],
             "darujme_find_projects": ["search", "by_ids"],
             "darujme_find_promotions": ["search", "by_ids"],
@@ -1166,6 +1399,7 @@ def _metadata_result() -> MetadataResult:
         },
         limits=MetadataLimits(
             max_page_limit=MAX_PAGE_LIMIT,
+            max_settlement_range_days=MAX_SETTLEMENT_RANGE_DAYS,
             cursor_pagination="Darujme pageSize and offset wrapped in opaque cursors.",
         ),
         error_codes=[
@@ -1191,7 +1425,7 @@ def _metadata_result() -> MetadataResult:
 
 
 def _next_cursor(
-    kind: Literal["transactions", "pledges", "projects", "promotions"],
+    kind: Literal["transactions", "settlements", "pledges", "projects", "promotions"],
     filter_hash: str,
     offset: int,
     limit: int,
@@ -1203,7 +1437,7 @@ def _next_cursor(
 
 
 def _next_cursor_from_total(
-    kind: Literal["transactions", "pledges", "projects", "promotions"],
+    kind: Literal["transactions", "settlements", "pledges", "projects", "promotions"],
     filter_hash: str,
     offset: int,
     limit: int,
@@ -1232,7 +1466,7 @@ def _decode_cursor(value: str) -> SearchCursor:
 def _decode_cursor_result(
     cursor: str,
     *,
-    kind: Literal["transactions", "pledges", "projects", "promotions"],
+    kind: Literal["transactions", "settlements", "pledges", "projects", "promotions"],
     filter_hash: str,
 ) -> SearchCursor | ErrorInfo:
     try:
@@ -1270,12 +1504,35 @@ def _control_totals(records: list[Any]) -> ControlTotals:
     )
 
 
+def _settlement_control_totals(records: list[DarujmeSettlementAggregate]) -> ControlTotals:
+    sent_by_currency: dict[str, dict[str, str | int]] = {}
+    outgoing_by_currency: dict[str, dict[str, str | int]] = {}
+    for record in records:
+        _add_decimal_total(outgoing_by_currency, record.currency, Decimal(record.outgoing_total))
+        _add_decimal_total(sent_by_currency, record.currency, Decimal(record.sent_total))
+    return ControlTotals(
+        count=len(records),
+        sent_by_currency=sent_by_currency,
+        outgoing_by_currency=outgoing_by_currency,
+    )
+
+
 def _add_money_total(bucket_map: dict[str, dict[str, str | int]], money: Any) -> None:
     if money is None or money.currency is None or money.amount is None:
         return
     bucket = bucket_map.setdefault(money.currency, {"count": 0, "amount": "0"})
     bucket["count"] = int(bucket["count"]) + 1
     bucket["amount"] = f"{float(str(bucket['amount'])) + float(money.amount):.2f}"
+
+
+def _add_decimal_total(
+    bucket_map: dict[str, dict[str, str | int]],
+    currency: str,
+    amount: Decimal,
+) -> None:
+    bucket = bucket_map.setdefault(currency, {"count": 0, "amount": "0.00"})
+    bucket["count"] = int(bucket["count"]) + 1
+    bucket["amount"] = _format_money(Decimal(str(bucket["amount"])) + amount)
 
 
 def _donor_key(donor: dict[str, Any], pledge_id: int | None) -> str:

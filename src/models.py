@@ -125,6 +125,22 @@ class DarujmePledge(BaseModel):
     raw: dict[str, Any] | None = None
 
 
+class DarujmeSettlementAggregate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_system: str = "darujme"
+    source_kind: str = "settlement_aggregate"
+    settled_date: str
+    outgoing_bank_account: str
+    outgoing_variable_symbol: str
+    currency: str
+    outgoing_total: str
+    sent_total: str
+    fee_total: str
+    transaction_count: int
+    transaction_ids: list[int] = Field(default_factory=list)
+
+
 class DarujmeProject(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -187,6 +203,13 @@ class ControlTotals(BaseModel):
 
 class FindTransactionsResult(BaseModel):
     transactions: list[DarujmeTransaction | FoundItemError] = Field(default_factory=list)
+    next_cursor: str | None = None
+    control_totals: ControlTotals | None = None
+    error: ErrorInfo | None = None
+
+
+class FindSettlementAggregatesResult(BaseModel):
+    settlements: list[DarujmeSettlementAggregate] = Field(default_factory=list)
     next_cursor: str | None = None
     control_totals: ControlTotals | None = None
     error: ErrorInfo | None = None

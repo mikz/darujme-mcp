@@ -35,6 +35,14 @@ Records expose common fields that agents can compose with other systems:
 
 Transaction records also preserve Darujme-native fields such as `transaction_id`, `presentable_code`, `state`, `sent_amount`, `received_at`, `outgoing_amount`, `outgoing_variable_symbol`, `outgoing_bank_account`, and `last_modified_at`.
 
+`darujme_find_transactions` uses `query_type` as a discriminator. Besides
+transaction row search and ID lookup, `settlement_aggregate` returns
+bank-facing aggregate rows grouped from real outgoing transaction lines by
+settled day, outgoing bank account, outgoing variable symbol, and currency.
+The aggregate path queries Darujme one outgoing day at a time because the API
+supports outgoing-date filtering but does not reliably return an outgoing date
+field on each transaction.
+
 Search tool dates use `*_from` and `*_to` field names consistently:
 `received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
 `failed_from`, and `failed_to`. These fields map directly to Darujme's

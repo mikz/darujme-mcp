@@ -40,7 +40,7 @@ mise run mcp-reload
 
 - `darujme_login`: stores and validates required `api_id`, `api_secret`, and `organization_id` using `auto`, `direct`, `prefab`, or `web` mode.
 - `darujme_test_connection`: safe read-only credential check.
-- `darujme_find_transactions`: `mode: "search" | "by_ids"`.
+- `darujme_find_transactions`: `query_type: "transaction_search" | "transaction_by_ids" | "settlement_aggregate"`.
 - `darujme_find_pledges`: `mode: "search" | "by_ids" | "by_vs"`.
 - `darujme_find_projects`: `mode: "search" | "by_ids"`.
 - `darujme_find_promotions`: `mode: "search" | "by_ids"`.
@@ -49,12 +49,12 @@ mise run mcp-reload
 
 Donor PII is redacted by default. Set `include_donor_pii=true` to return names, contacts, addresses, company IDs, custom fields, and confirmation recipient fields. `include_raw=true` requires `include_donor_pii=true`.
 
-Date filters use the same `*_from` / `*_to` naming style as the sibling MCPs:
-`received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
-`failed_from`, and `failed_to`. Darujme payout fields use
-`outgoing_variable_symbol`, `outgoing_amount`, `outgoing_currency`, and
-`outgoing_bank_account`; the old Darujme API abbreviation `outgoing_vs` is not
-part of the tool contract.
+Transaction date filters use the same `*_from` / `*_to` naming style as the
+sibling MCPs: `received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
+`failed_from`, and `failed_to`. Settlement aggregate queries use
+`settled_from` and `settled_to`, and return rows with
+`outgoing_variable_symbol`, `outgoing_bank_account`, `currency`,
+`outgoing_total`, `sent_total`, `fee_total`, and `transaction_ids`.
 
 ## Checks
 

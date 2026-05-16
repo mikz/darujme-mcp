@@ -5,7 +5,7 @@ import pytest
 from client import DarujmeClient
 from server import (
     FindProjectsQuery,
-    FindTransactionsQuery,
+    TransactionSearchQuery,
     _find_projects,
     _find_transactions,
     _test_connection,
@@ -42,7 +42,7 @@ async def test_live_connection_and_read_only_searches() -> None:
         assert projects.control_totals is not None
 
         transactions = await _find_transactions(
-            client, FindTransactionsQuery(mode="search", limit=5)
+            client, TransactionSearchQuery(query_type="transaction_search", limit=5)
         )
         assert transactions.error is None
         assert transactions.control_totals is not None

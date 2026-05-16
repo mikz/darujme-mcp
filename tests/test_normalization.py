@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import TypeAdapter
 
 from normalization import normalize_pledge, normalize_transaction
 from server import FindTransactionsQuery
@@ -43,4 +44,6 @@ def test_pledge_redacts_comment_and_donor_without_pii() -> None:
 
 def test_include_raw_requires_donor_pii() -> None:
     with pytest.raises(ValueError, match="include_raw requires include_donor_pii"):
-        FindTransactionsQuery.model_validate({"mode": "search", "include_raw": True})
+        TypeAdapter(FindTransactionsQuery).validate_python(
+            {"query_type": "transaction_search", "include_raw": True}
+        )

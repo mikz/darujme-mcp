@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 import respx
 from httpx import Response
+from pydantic import TypeAdapter
 
 from client import DarujmeClient
 from models import FoundItemError
@@ -15,9 +16,10 @@ from server import (
     FindPromotionsQuery,
     FindTransactionsQuery,
     SearchCursor,
+    SettlementAggregateQuery,
+    TransactionSearchQuery,
     _control_totals,
     _encode_cursor,
-    _filter_transactions,
     _find_projects,
     _find_transactions,
     _pledge_params,
@@ -39,7 +41,16 @@ def settings() -> Settings:
 
 def test_query_rejects_unknown_keys() -> None:
     with pytest.raises(ValueError):
-        FindTransactionsQuery.model_validate({"mode": "search", "token": "must-not-accept"})
+        TypeAdapter(FindTransactionsQuery).validate_python(
+            {"query_type": "transaction_search", "token": "must-not-accept"}
+        )
+
+
+def test_transaction_query_schema_is_discriminated_union() -> None:
+    schema = TypeAdapter(FindTransactionsQuery).json_schema()
+
+    assert schema["discriminator"]["propertyName"] == "query_type"
+    assert len(schema["oneOf"]) == 3
 
 
 def test_by_id_modes_require_ids() -> None:
@@ -65,8 +76,8 @@ def test_pledge_search_uses_documented_project_filter() -> None:
 
 
 def test_transaction_search_uses_consistent_date_names() -> None:
-    query = FindTransactionsQuery(
-        mode="search",
+    query = TransactionSearchQuery(
+        query_type="transaction_search",
         received_from=date(2026, 5, 1),
         received_to=date(2026, 5, 2),
         outgoing_from=date(2026, 5, 3),
@@ -88,7 +99,9 @@ def test_transaction_search_uses_consistent_date_names() -> None:
 
 def test_old_transaction_date_aliases_are_rejected() -> None:
     with pytest.raises(ValueError):
-        FindTransactionsQuery.model_validate({"mode": "search", "from_received_date": "2026-05-01"})
+        TypeAdapter(FindTransactionsQuery).validate_python(
+            {"query_type": "transaction_search", "from_received_date": "2026-05-01"}
+        )
 
 
 @respx.mock
@@ -108,8 +121,8 @@ async def test_find_transactions_pages_with_opaque_cursor() -> None:
 
     result = await _find_transactions(
         client,
-        FindTransactionsQuery(
-            mode="search",
+        TransactionSearchQuery(
+            query_type="transaction_search",
             received_from=date(2026, 5, 1),
             limit=2,
         ),
@@ -126,11 +139,15 @@ async def test_find_transactions_pages_with_opaque_cursor() -> None:
 
 async def test_cursor_filter_drift_is_rejected() -> None:
     client = DarujmeClient(settings())
-    original = FindTransactionsQuery(mode="search", received_from=date(2026, 5, 1))
+    original = TransactionSearchQuery(
+        query_type="transaction_search", received_from=date(2026, 5, 1)
+    )
     cursor = _encode_cursor(
         SearchCursor(kind="transactions", offset=100, filter_hash=original.filter_hash())
     )
-    changed = FindTransactionsQuery(mode="search", received_from=date(2026, 5, 2), cursor=cursor)
+    changed = TransactionSearchQuery(
+        query_type="transaction_search", received_from=date(2026, 5, 2), cursor=cursor
+    )
 
     result = await _find_transactions(client, changed)
     await client.aclose()
@@ -139,36 +156,65 @@ async def test_cursor_filter_drift_is_rejected() -> None:
     assert result.error.code == "cursor_mismatch"
 
 
-def test_outgoing_filters_are_local_and_named_like_response_fields() -> None:
-    first = sample_transaction(
-        transactionId=1,
-        outgoingVs="260310661",
-        outgoingAmount={"cents": 192600, "currency": "CZK"},
-        outgoingBankAccount="123456789/0800",
+@respx.mock
+async def test_settlement_aggregate_groups_one_day_outgoing_transactions() -> None:
+    respx.get("https://www.darujme.cz/api/v1/organization/2/transactions-by-filter").mock(
+        return_value=Response(
+            200,
+            json={
+                "transactions": [
+                    sample_transaction(
+                        transactionId=6921582,
+                        sentAmount={"cents": 100000, "currency": "CZK"},
+                        outgoingAmount={"cents": 96300, "currency": "CZK"},
+                        outgoingVs="260310661",
+                        outgoingBankAccount="2603445200/2010",
+                    ),
+                    sample_transaction(
+                        transactionId=6921374,
+                        sentAmount={"cents": 100000, "currency": "CZK"},
+                        outgoingAmount={"cents": 96300, "currency": "CZK"},
+                        outgoingVs="260310661",
+                        outgoingBankAccount="2603445200/2010",
+                    ),
+                    sample_transaction(
+                        transactionId=6932731,
+                        sentAmount={"cents": 10000, "currency": "CZK"},
+                        outgoingAmount={"cents": 9630, "currency": "CZK"},
+                        outgoingVs="260317516",
+                        outgoingBankAccount="2603445200/2010",
+                    ),
+                ]
+            },
+        )
     )
-    second = sample_transaction(
-        transactionId=2,
-        outgoingVs="other",
-        outgoingAmount={"cents": 9630, "currency": "CZK"},
-        outgoingBankAccount="987654321/0300",
+    client = DarujmeClient(settings())
+
+    result = await _find_transactions(
+        client,
+        SettlementAggregateQuery(
+            query_type="settlement_aggregate",
+            settled_from=date(2026, 3, 10),
+            settled_to=date(2026, 3, 10),
+            outgoing_variable_symbol="260310661",
+            outgoing_currency="CZK",
+        ),
     )
-    query = FindTransactionsQuery(
-        mode="search",
-        outgoing_variable_symbol="260310661",
-        outgoing_amount="1926.00",
-        outgoing_currency="CZK",
-        outgoing_bank_account="123456789/0800",
-    )
+    await client.aclose()
 
-    records = [
-        normalize_transaction(first, include_donor_pii=False, include_raw=False),
-        normalize_transaction(second, include_donor_pii=False, include_raw=False),
-    ]
-
-    filtered = _filter_transactions(records, query)
-
-    assert [record.transaction_id for record in filtered] == [1]
-    assert filtered[0].outgoing_variable_symbol == "260310661"
+    assert result.error is None
+    assert len(result.settlements) == 1
+    settlement = result.settlements[0]
+    assert settlement.settled_date == "2026-03-10"
+    assert settlement.outgoing_total == "1926.00"
+    assert settlement.sent_total == "2000.00"
+    assert settlement.fee_total == "74.00"
+    assert settlement.transaction_ids == [6921582, 6921374]
+    assert result.control_totals is not None
+    assert result.control_totals.outgoing_by_currency["CZK"] == {
+        "count": 1,
+        "amount": "1926.00",
+    }
 
 
 def test_transaction_control_totals_split_sent_and_outgoing_amounts() -> None:
