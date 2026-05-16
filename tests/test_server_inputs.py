@@ -196,8 +196,8 @@ async def test_settlement_aggregate_groups_one_day_outgoing_transactions() -> No
             query_type="settlement_aggregate",
             settled_from=date(2026, 3, 10),
             settled_to=date(2026, 3, 10),
-            outgoing_variable_symbol="260310661",
-            outgoing_currency="CZK",
+            variable_symbol="260310661",
+            currency="CZK",
         ),
     )
     await client.aclose()
@@ -205,16 +205,20 @@ async def test_settlement_aggregate_groups_one_day_outgoing_transactions() -> No
     assert result.error is None
     assert len(result.settlements) == 1
     settlement = result.settlements[0]
-    assert settlement.settled_date == "2026-03-10"
-    assert settlement.outgoing_total == "1926.00"
+    assert settlement.model_dump(exclude_none=True) == {
+        "date": "2026-03-10",
+        "bank_account": "2603445200/2010",
+        "variable_symbol": "260310661",
+        "currency": "CZK",
+        "amount": "1926.00",
+        "sent_total": "2000.00",
+        "fee_total": "74.00",
+        "transaction_count": 2,
+        "transaction_ids": [6921582, 6921374],
+    }
     assert settlement.sent_total == "2000.00"
     assert settlement.fee_total == "74.00"
     assert settlement.transaction_ids == [6921582, 6921374]
-    assert result.control_totals is not None
-    assert result.control_totals.outgoing_by_currency["CZK"] == {
-        "count": 1,
-        "amount": "1926.00",
-    }
 
 
 def test_transaction_control_totals_split_sent_and_outgoing_amounts() -> None:

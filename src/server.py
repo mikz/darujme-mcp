@@ -230,27 +230,44 @@ class SettlementAggregateQuery(BaseModel):
             "examples": [
                 {
                     "query_type": "settlement_aggregate",
-                    "settled_from": "2026-03-01",
-                    "settled_to": "2026-03-31",
-                    "outgoing_currency": "CZK",
+                    "settled_from": "2026-03-10",
+                    "settled_to": "2026-03-10",
+                    "bank_account": "2603445200/2010",
+                    "variable_symbol": "260310661",
+                    "currency": "CZK",
+                    "amount": "1926.00",
                     "limit": 100,
                 }
             ]
         },
     )
 
-    query_type: Literal["settlement_aggregate"]
-    settled_from: date
-    settled_to: date
-    outgoing_bank_account: str | None = None
-    outgoing_variable_symbol: str | None = None
-    outgoing_currency: str | None = None
-    outgoing_total: Decimal | None = None
+    query_type: Literal["settlement_aggregate"] = Field(
+        description=(
+            "Bank payout reconciliation path. Returns organization payout rows for bank "
+            "statement matching."
+        )
+    )
+    settled_from: date = Field(description="First organization payout date to aggregate.")
+    settled_to: date = Field(description="Last organization payout date to aggregate.")
+    bank_account: str | None = Field(
+        default=None,
+        description="Optional organization payout bank account filter in account/bank_code form.",
+    )
+    variable_symbol: str | None = Field(
+        default=None,
+        description="Optional organization payout variable symbol filter.",
+    )
+    currency: str | None = Field(
+        default=None,
+        description="Optional payout currency filter such as CZK.",
+    )
+    amount: Decimal | None = Field(
+        default=None,
+        description="Optional organization payout amount for bank statement matching.",
+    )
     project_ids: list[int] = Field(default_factory=list)
     promotion_ids: list[int] = Field(default_factory=list)
-    transaction_states: list[Literal["sent_to_organization"]] = Field(
-        default_factory=lambda: ["sent_to_organization"]
-    )
     limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
     cursor: str | None = None
 
@@ -267,15 +284,12 @@ class SettlementAggregateQuery(BaseModel):
                 "query_type": self.query_type,
                 "settled_from": _api_date(self.settled_from),
                 "settled_to": _api_date(self.settled_to),
-                "outgoing_bank_account": self.outgoing_bank_account,
-                "outgoing_variable_symbol": self.outgoing_variable_symbol,
-                "outgoing_currency": self.outgoing_currency,
-                "outgoing_total": str(self.outgoing_total)
-                if self.outgoing_total is not None
-                else None,
+                "bank_account": _bank_account(self.bank_account),
+                "variable_symbol": self.variable_symbol,
+                "currency": self.currency,
+                "amount": str(self.amount) if self.amount is not None else None,
                 "project_ids": sorted(self.project_ids),
                 "promotion_ids": sorted(self.promotion_ids),
-                "transaction_states": sorted(self.transaction_states),
             }
         )
 
@@ -550,8 +564,9 @@ async def darujme_login(
             mode="direct",
             status="error",
             message=(
-                "mode=direct requires credentials.api_id, credentials.api_secret, "
-                "and credentials.organization_id."
+                "mode=direct accepts credentials in the tool call and requires "
+                "credentials.api_id, credentials.api_secret, and "
+                "credentials.organization_id."
             ),
             ok=False,
         )
@@ -746,7 +761,7 @@ async def darujme_find_transactions(
     ],
     ctx: Context,
 ) -> FindTransactionsResult | FindSettlementAggregatesResult:
-    """Find Darujme transactions or settlement aggregate rows."""
+    """Find Darujme transactions or settlement aggregate organization payout rows."""
     return await _find_transactions(_client_from_context(ctx), query)
 
 
@@ -903,7 +918,7 @@ async def _find_settlement_aggregates(
     else:
         offset = 0
     try:
-        records: list[DarujmeTransaction] = []
+        records: list[tuple[str, DarujmeTransaction]] = []
         current = query.settled_from
         while current <= query.settled_to:
             day_records = await _fetch_settlement_transactions_for_day(client, query, current)
@@ -919,7 +934,6 @@ async def _find_settlement_aggregates(
         return FindSettlementAggregatesResult(
             settlements=page,
             next_cursor=next_cursor,
-            control_totals=_settlement_control_totals(page),
         )
     except Exception as exc:
         return FindSettlementAggregatesResult(error=_error_info(exc))
@@ -929,7 +943,7 @@ async def _fetch_settlement_transactions_for_day(
     client: DarujmeClient,
     query: SettlementAggregateQuery,
     day: date,
-) -> list[DarujmeTransaction]:
+) -> list[tuple[str, DarujmeTransaction]]:
     records: list[DarujmeTransaction] = []
     offset = 0
     while True:
@@ -939,7 +953,7 @@ async def _fetch_settlement_transactions_for_day(
                 "promotionIds[]": query.promotion_ids,
                 "fromOutgoingDate": _api_date(day),
                 "toOutgoingDate": _api_date(day),
-                "transactionState[]": query.transaction_states,
+                "transactionState[]": ["sent_to_organization"],
                 "pageSize": MAX_PAGE_LIMIT,
                 "offset": offset,
             }
@@ -950,15 +964,7 @@ async def _fetch_settlement_transactions_for_day(
         if len(raws) < MAX_PAGE_LIMIT:
             break
         offset += MAX_PAGE_LIMIT
-    return [_with_settled_date(record, day) for record in records]
-
-
-def _with_settled_date(transaction: DarujmeTransaction, day: date) -> DarujmeTransaction:
-    return transaction.model_copy(
-        update={
-            "dates": transaction.dates.model_copy(update={"outgoing_at": _api_date(day)}),
-        }
-    )
+    return [(_api_date(day) or "", record) for record in records]
 
 
 async def _find_pledges(client: DarujmeClient, query: FindPledgesQuery) -> FindPledgesResult:
@@ -1208,14 +1214,15 @@ def _pledge_params(query: FindPledgesQuery, *, offset: int) -> dict[str, Any]:
     }
 
 
-def _aggregate_settlements(records: list[DarujmeTransaction]) -> list[DarujmeSettlementAggregate]:
+def _aggregate_settlements(
+    records: list[tuple[str, DarujmeTransaction]]
+) -> list[DarujmeSettlementAggregate]:
     groups: dict[tuple[str, str, str, str], dict[str, Any]] = {}
-    for transaction in records:
-        settled_date = transaction.dates.outgoing_at
+    for settled_date, transaction in records:
         outgoing = transaction.outgoing_amount
         sent = transaction.sent_amount
         if (
-            settled_date is None
+            not settled_date
             or outgoing is None
             or outgoing.amount is None
             or outgoing.currency is None
@@ -1248,11 +1255,11 @@ def _aggregate_settlements(records: list[DarujmeTransaction]) -> list[DarujmeSet
         sent_total = values["sent_total"]
         settlements.append(
             DarujmeSettlementAggregate(
-                settled_date=settled_date,
-                outgoing_bank_account=account,
-                outgoing_variable_symbol=variable_symbol,
+                date=settled_date,
+                bank_account=account,
+                variable_symbol=variable_symbol,
                 currency=currency,
-                outgoing_total=_format_money(outgoing_total),
+                amount=_format_money(outgoing_total),
                 sent_total=_format_money(sent_total),
                 fee_total=_format_money(sent_total - outgoing_total),
                 transaction_count=len(values["transaction_ids"]),
@@ -1262,9 +1269,9 @@ def _aggregate_settlements(records: list[DarujmeTransaction]) -> list[DarujmeSet
     return sorted(
         settlements,
         key=lambda item: (
-            item.settled_date,
-            item.outgoing_bank_account,
-            item.outgoing_variable_symbol,
+            item.date,
+            item.bank_account,
+            item.variable_symbol,
             item.currency,
         ),
     )
@@ -1275,26 +1282,27 @@ def _filter_settlement_aggregates(
     query: SettlementAggregateQuery,
 ) -> list[DarujmeSettlementAggregate]:
     result = settlements
-    if query.outgoing_bank_account:
+    bank_account = _bank_account(query.bank_account)
+    if bank_account:
         result = [
             settlement
             for settlement in result
-            if settlement.outgoing_bank_account == query.outgoing_bank_account
+            if settlement.bank_account == bank_account
         ]
-    if query.outgoing_variable_symbol:
+    if query.variable_symbol:
         result = [
             settlement
             for settlement in result
-            if settlement.outgoing_variable_symbol == query.outgoing_variable_symbol
+            if settlement.variable_symbol == query.variable_symbol
         ]
-    if query.outgoing_currency:
-        currency = query.outgoing_currency.upper()
+    if query.currency:
+        currency = query.currency.upper()
         result = [settlement for settlement in result if settlement.currency.upper() == currency]
-    if query.outgoing_total is not None:
+    if query.amount is not None:
         result = [
             settlement
             for settlement in result
-            if Decimal(settlement.outgoing_total) == query.outgoing_total
+            if Decimal(settlement.amount) == query.amount
         ]
     return result
 
@@ -1313,6 +1321,18 @@ def _format_money(amount: Decimal) -> str:
     return str(amount.quantize(Decimal("0.01")))
 
 
+def _bank_account(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.replace(" ", "")
+    if "/" not in normalized:
+        return normalized
+    account, bank_code = normalized.split("/", 1)
+    if not account or not bank_code:
+        return normalized
+    return f"{account}/{bank_code}"
+
+
 def _metadata_result() -> MetadataResult:
     return MetadataResult(
         source_documents=[
@@ -1321,6 +1341,8 @@ def _metadata_result() -> MetadataResult:
             "https://www.darujme.cz/dar/api/darujme_api.php?api_id=%s&api_secret=%s&typ_dotazu=1",
         ],
         comparison_fields={
+            "money_format": "fixed_two_decimal_string",
+            "bank_account_format": "account/bank_code",
             "date_filters": [
                 "received_from",
                 "received_to",
@@ -1331,6 +1353,7 @@ def _metadata_result() -> MetadataResult:
             ],
             "settlement_date_filters": ["settled_from", "settled_to"],
             "donor_amount": "sent_amount",
+            "bank_account_fields": ["outgoing_bank_account", "settlements.bank_account"],
             "bank_payout_fields": [
                 "outgoing_amount",
                 "outgoing_currency",
@@ -1338,16 +1361,20 @@ def _metadata_result() -> MetadataResult:
                 "outgoing_bank_account",
             ],
             "settlement_aggregate_fields": [
-                "settled_date",
-                "outgoing_bank_account",
-                "outgoing_variable_symbol",
+                "date",
+                "bank_account",
+                "variable_symbol",
                 "currency",
-                "outgoing_total",
+                "amount",
                 "sent_total",
                 "fee_total",
                 "transaction_count",
                 "transaction_ids",
             ],
+            "settlement_aggregate_usage": (
+                "Use query_type=settlement_aggregate for bank payout reconciliation and "
+                "bank statement matching against organization payout rows."
+            ),
             "control_totals": ["sent_by_currency", "outgoing_by_currency"],
         },
         setup_tools=["darujme_login"],
@@ -1484,15 +1511,21 @@ def _control_totals(records: list[Any]) -> ControlTotals:
     outgoing_by_currency: dict[str, dict[str, str | int]] = {}
     by_state: dict[str, int] = {}
     for record in records:
-        state = getattr(record, "state", None) or getattr(record.states, "state", None) or "unknown"
+        states = getattr(record, "states", None)
+        state = getattr(record, "state", None) or getattr(states, "state", None) or "unknown"
         by_state[state] = by_state.get(state, 0) + 1
         amounts = getattr(record, "amounts", None)
         money = None
         if amounts is not None:
             money = amounts.sent or amounts.pledged or amounts.collected_estimate or amounts.target
+        elif isinstance(record, DarujmeTransaction):
+            money = record.sent_amount
         if money is not None and money.currency is not None and money.amount is not None:
             _add_money_total(by_currency, money)
-        if amounts is not None:
+        if isinstance(record, DarujmeTransaction):
+            _add_money_total(sent_by_currency, record.sent_amount)
+            _add_money_total(outgoing_by_currency, record.outgoing_amount)
+        elif amounts is not None:
             _add_money_total(sent_by_currency, amounts.sent)
             _add_money_total(outgoing_by_currency, amounts.outgoing)
     return ControlTotals(
@@ -1504,35 +1537,12 @@ def _control_totals(records: list[Any]) -> ControlTotals:
     )
 
 
-def _settlement_control_totals(records: list[DarujmeSettlementAggregate]) -> ControlTotals:
-    sent_by_currency: dict[str, dict[str, str | int]] = {}
-    outgoing_by_currency: dict[str, dict[str, str | int]] = {}
-    for record in records:
-        _add_decimal_total(outgoing_by_currency, record.currency, Decimal(record.outgoing_total))
-        _add_decimal_total(sent_by_currency, record.currency, Decimal(record.sent_total))
-    return ControlTotals(
-        count=len(records),
-        sent_by_currency=sent_by_currency,
-        outgoing_by_currency=outgoing_by_currency,
-    )
-
-
 def _add_money_total(bucket_map: dict[str, dict[str, str | int]], money: Any) -> None:
     if money is None or money.currency is None or money.amount is None:
         return
     bucket = bucket_map.setdefault(money.currency, {"count": 0, "amount": "0"})
     bucket["count"] = int(bucket["count"]) + 1
     bucket["amount"] = f"{float(str(bucket['amount'])) + float(money.amount):.2f}"
-
-
-def _add_decimal_total(
-    bucket_map: dict[str, dict[str, str | int]],
-    currency: str,
-    amount: Decimal,
-) -> None:
-    bucket = bucket_map.setdefault(currency, {"count": 0, "amount": "0.00"})
-    bucket["count"] = int(bucket["count"]) + 1
-    bucket["amount"] = _format_money(Decimal(str(bucket["amount"])) + amount)
 
 
 def _donor_key(donor: dict[str, Any], pledge_id: int | None) -> str:

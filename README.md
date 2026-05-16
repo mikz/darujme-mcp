@@ -2,7 +2,7 @@
 
 Read-only FastMCP server for Darujme API v1 donation data.
 
-V1 exposes Darujme transactions, pledges, projects, and peer-to-peer promotions in stable normalized shapes for accounting and donor-support agents. It intentionally does not mutate Darujme data, generate/send confirmations, or implement Fio-specific reconciliation heuristics.
+V1 exposes Darujme transactions, pledges, projects, and peer-to-peer promotions in stable normalized shapes for accounting and donor-support agents. It intentionally does not mutate Darujme data or generate/send confirmations.
 
 ## Setup
 
@@ -21,7 +21,8 @@ DARUJME_ORGANIZATION_ID=...
 
 or with the `darujme_login` MCP tool. It supports `mode: "auto" | "direct" |
 "prefab" | "web"`: Apps-capable clients get an inline Prefab form, while
-clients such as Codex can use direct arguments or a localhost web form.
+other clients can use `mode: "direct"` with `api_id`, `api_secret`, and
+`organization_id` in the tool call, or a localhost web form.
 `DARUJME_ORGANIZATION_ID` is part of the login contract because Darujme API v1
 requires `organizationId` in organization-scoped URLs and does not expose token
 introspection or organization discovery. Stored credentials are scoped to the
@@ -50,11 +51,12 @@ mise run mcp-reload
 Donor PII is redacted by default. Set `include_donor_pii=true` to return names, contacts, addresses, company IDs, custom fields, and confirmation recipient fields. `include_raw=true` requires `include_donor_pii=true`.
 
 Transaction date filters use the same `*_from` / `*_to` naming style as the
-sibling MCPs: `received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
+other MCPs: `received_from`, `received_to`, `outgoing_from`, `outgoing_to`,
 `failed_from`, and `failed_to`. Settlement aggregate queries use
-`settled_from` and `settled_to`, and return rows with
-`outgoing_variable_symbol`, `outgoing_bank_account`, `currency`,
-`outgoing_total`, `sent_total`, `fee_total`, and `transaction_ids`.
+`settled_from` and `settled_to` for bank payout reconciliation and bank
+statement matching. They return organization payout rows with `date`,
+`bank_account`, `variable_symbol`, `currency`, `amount`, `sent_total`,
+`fee_total`, and `transaction_ids`.
 
 ## Checks
 

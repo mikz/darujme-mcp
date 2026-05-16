@@ -47,9 +47,6 @@ def normalize_transaction(
     sent_amount = normalize_money(raw.get("sentAmount"))
     outgoing_amount = normalize_money(raw.get("outgoingAmount"))
     return DarujmeTransaction(
-        source_id=transaction_id,
-        source_key=f"darujme:transaction:{transaction_id}",
-        source_number=_string_or_none(raw.get("presentableCode")),
         organization_id=organization_id,
         transaction_id=transaction_id,
         presentable_code=_string_or_none(raw.get("presentableCode")),
@@ -58,19 +55,8 @@ def normalize_transaction(
         received_at=_string_or_none(raw.get("receivedAt")),
         outgoing_amount=outgoing_amount,
         outgoing_variable_symbol=_string_or_none(raw.get("outgoingVs")),
-        outgoing_bank_account=_string_or_none(raw.get("outgoingBankAccount")),
+        outgoing_bank_account=_bank_account(_string_or_none(raw.get("outgoingBankAccount"))),
         last_modified_at=_string_or_none(raw.get("lastModifiedDateTime")),
-        dates=DarujmeDates(
-            received_at=_string_or_none(raw.get("receivedAt")),
-            last_modified_at=_string_or_none(raw.get("lastModifiedDateTime")),
-            pledged_at=_string_or_none(pledge.get("pledgedAt")) if pledge else None,
-        ),
-        amounts=DarujmeAmounts(
-            sent=sent_amount,
-            outgoing=outgoing_amount,
-            pledged=normalize_money(pledge.get("pledgedAmount")) if pledge else None,
-        ),
-        states=DarujmeStates(state=_string_or_none(raw.get("state"))),
         project=DarujmeProjectRef(project_id=project_id) if project_id is not None else None,
         promotion=DarujmePromotionRef(promotion_id=promotion_id, project_id=project_id)
         if promotion_id is not None
@@ -107,9 +93,6 @@ def normalize_pledge(
         else []
     )
     return DarujmePledge(
-        source_id=pledge_id,
-        source_key=f"darujme:pledge:{pledge_id}",
-        source_number=_string_or_none(raw.get("pledgeId")),
         organization_id=_int_or_none(raw.get("organizationId")),
         pledge_id=pledge_id,
         project=DarujmeProjectRef(project_id=project_id) if project_id is not None else None,
@@ -138,9 +121,6 @@ def normalize_project(raw: dict[str, Any], *, include_raw: bool) -> DarujmeProje
     project_id = _required_int(raw.get("projectId"), "projectId")
     organization = raw.get("organization") if isinstance(raw.get("organization"), dict) else {}
     return DarujmeProject(
-        source_id=project_id,
-        source_key=f"darujme:project:{project_id}",
-        source_number=str(project_id),
         project_id=project_id,
         organization_id=_int_or_none(organization.get("organizationId")),
         organization=organization,
@@ -163,9 +143,6 @@ def normalize_promotion(raw: dict[str, Any], *, include_raw: bool) -> DarujmePro
     promotion_id = _required_int(raw.get("promotionId"), "promotionId")
     organization = raw.get("organization") if isinstance(raw.get("organization"), dict) else {}
     return DarujmePromotion(
-        source_id=promotion_id,
-        source_key=f"darujme:promotion:{promotion_id}",
-        source_number=str(promotion_id),
         promotion_id=promotion_id,
         project_id=_int_or_none(raw.get("projectId")),
         organization_id=_int_or_none(organization.get("organizationId")),
@@ -258,6 +235,18 @@ def _string_or_none(value: Any) -> str | None:
         return str(value)
     string = str(value).strip()
     return string or None
+
+
+def _bank_account(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.replace(" ", "")
+    if "/" not in normalized:
+        return normalized
+    account, bank_code = normalized.split("/", 1)
+    if not account or not bank_code:
+        return normalized
+    return f"{account}/{bank_code}"
 
 
 def _dict_of_strings(value: Any) -> dict[str, str]:

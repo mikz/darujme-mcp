@@ -1,6 +1,6 @@
 # Design
 
-`darujme-mcp` follows the same local shape as the sibling `fio-mcp` and `simpleshop-mcp` projects:
+`darujme-mcp` follows the same local MCP package shape as the sibling projects:
 
 - `src/server.py` owns FastMCP tool contracts, cursor validation, result models for tool-only metadata, and login form wiring.
 - `src/client.py` is a narrow Darujme API v1 wrapper. It only calls read endpoints and adds `apiId` and `apiSecret` as query parameters.
@@ -26,9 +26,9 @@ Donor PII is redacted by default. This includes names, email, phone, address, co
 
 ## Normalized Shape
 
-Records expose common fields that agents can compose with other systems:
+Records expose source-native identifiers and grouped field families:
 
-- `source_system`, `source_id`, `source_key`, `source_number`
+- `transaction_id`, `pledge_id`, `project_id`, or `promotion_id`
 - `dates`, `amounts`, `states`
 - `project`, `promotion`, `donor`
 - `raw` when explicitly requested
@@ -37,8 +37,9 @@ Transaction records also preserve Darujme-native fields such as `transaction_id`
 
 `darujme_find_transactions` uses `query_type` as a discriminator. Besides
 transaction row search and ID lookup, `settlement_aggregate` returns
-bank-facing aggregate rows grouped from real outgoing transaction lines by
-settled day, outgoing bank account, outgoing variable symbol, and currency.
+organization payout rows for bank payout reconciliation and bank statement
+matching. Rows are grouped from real outgoing transaction lines by settled day,
+outgoing bank account, outgoing variable symbol, and currency.
 The aggregate path queries Darujme one outgoing day at a time because the API
 supports outgoing-date filtering but does not reliably return an outgoing date
 field on each transaction.

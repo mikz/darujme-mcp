@@ -81,10 +81,6 @@ class PledgeSummary(BaseModel):
 class DarujmeTransaction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_system: str = "darujme"
-    source_id: int
-    source_key: str
-    source_number: str | None = None
     organization_id: int | None = None
     transaction_id: int
     presentable_code: str | None = None
@@ -95,9 +91,6 @@ class DarujmeTransaction(BaseModel):
     outgoing_variable_symbol: str | None = None
     outgoing_bank_account: str | None = None
     last_modified_at: str | None = None
-    dates: DarujmeDates = Field(default_factory=DarujmeDates)
-    amounts: DarujmeAmounts = Field(default_factory=DarujmeAmounts)
-    states: DarujmeStates = Field(default_factory=DarujmeStates)
     project: DarujmeProjectRef | None = None
     promotion: DarujmePromotionRef | None = None
     donor: DarujmeDonor = Field(default_factory=DarujmeDonor)
@@ -108,10 +101,6 @@ class DarujmeTransaction(BaseModel):
 class DarujmePledge(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_system: str = "darujme"
-    source_id: int
-    source_key: str
-    source_number: str | None = None
     organization_id: int | None = None
     pledge_id: int
     project: DarujmeProjectRef | None = None
@@ -128,13 +117,11 @@ class DarujmePledge(BaseModel):
 class DarujmeSettlementAggregate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_system: str = "darujme"
-    source_kind: str = "settlement_aggregate"
-    settled_date: str
-    outgoing_bank_account: str
-    outgoing_variable_symbol: str
+    date: str
+    bank_account: str
+    variable_symbol: str
     currency: str
-    outgoing_total: str
+    amount: str
     sent_total: str
     fee_total: str
     transaction_count: int
@@ -144,10 +131,6 @@ class DarujmeSettlementAggregate(BaseModel):
 class DarujmeProject(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_system: str = "darujme"
-    source_id: int
-    source_key: str
-    source_number: str | None = None
     project_id: int
     promotion_id: None = None
     organization_id: int | None = None
@@ -167,10 +150,6 @@ class DarujmeProject(BaseModel):
 class DarujmePromotion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source_system: str = "darujme"
-    source_id: int
-    source_key: str
-    source_number: str | None = None
     promotion_id: int
     project_id: int | None = None
     organization_id: int | None = None
@@ -211,7 +190,6 @@ class FindTransactionsResult(BaseModel):
 class FindSettlementAggregatesResult(BaseModel):
     settlements: list[DarujmeSettlementAggregate] = Field(default_factory=list)
     next_cursor: str | None = None
-    control_totals: ControlTotals | None = None
     error: ErrorInfo | None = None
 
 

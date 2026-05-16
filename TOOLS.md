@@ -24,7 +24,7 @@ Query variants use `query_type` as a schema discriminator:
 
 - `transaction_search`: calls `GET /organization/{organizationId}/transactions-by-filter`.
 - `transaction_by_ids`: calls `GET /organization/{organizationId}/transaction/{transactionId}` for each ID and itemizes errors.
-- `settlement_aggregate`: calls `transactions-by-filter` per settled day and returns aggregate rows grouped by outgoing bank account, outgoing variable symbol, and currency.
+- `settlement_aggregate`: bank payout reconciliation path. Calls `transactions-by-filter` per settled day and returns organization payout rows grouped by outgoing bank account, outgoing variable symbol, and currency for bank statement matching.
 
 Transaction search filters include project IDs, promotion IDs,
 received/outgoing/failed dates, last modified timestamp, transaction states,
@@ -37,10 +37,24 @@ Darujme API parameters `fromReceivedDate`, `toReceivedDate`,
 
 Settlement aggregate queries use `settled_from` and `settled_to`; the MCP maps
 each day to Darujme's outgoing date filter because Darujme does not return a
-reliable outgoing date field on transactions. Aggregate rows expose
-`settled_date`, `outgoing_bank_account`, `outgoing_variable_symbol`, `currency`,
-`outgoing_total`, `sent_total`, `fee_total`, `transaction_count`, and
-`transaction_ids`.
+reliable outgoing date field on transactions. For bank statement matching, pass
+`bank_account`, `variable_symbol`, `currency`, and `amount` when those values
+are known. Aggregate organization payout rows expose
+`date`, `bank_account`, `variable_symbol`, `currency`, `amount`, `sent_total`,
+`fee_total`, `transaction_count`, and `transaction_ids`.
+
+```json
+{
+  "query_type": "settlement_aggregate",
+  "settled_from": "2026-03-10",
+  "settled_to": "2026-03-10",
+  "bank_account": "2603445200/2010",
+  "variable_symbol": "260310661",
+  "currency": "CZK",
+  "amount": "1926.00",
+  "limit": 100
+}
+```
 
 `control_totals` includes `sent_by_currency` and `outgoing_by_currency` so the
 donor-sent amount and organization payout amount are visible separately.
