@@ -413,7 +413,8 @@ def _requires_login(fn):
             if not ctx.client_supports_extension(UI_EXTENSION_ID):
                 hint += (
                     " This client does not render inline forms; credentials can also be set "
-                    "with DARUJME_API_ID, DARUJME_API_SECRET, and DARUJME_ORGANIZATION_ID."
+                    "with DARUJME_API_ID, DARUJME_API_SECRET, and DARUJME_ORGANIZATION_ID, "
+                    "or pre-seeded in the cwd-scoped credential store."
                 )
             raise ToolError(hint)
         return await fn(*args, **kwargs)

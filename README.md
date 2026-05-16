@@ -19,7 +19,7 @@ DARUJME_API_SECRET=...
 DARUJME_ORGANIZATION_ID=...
 ```
 
-or with the `darujme_login` MCP form tool. `DARUJME_ORGANIZATION_ID` is part of the login contract because Darujme API v1 requires `organizationId` in organization-scoped URLs and does not expose token introspection or organization discovery. Stored credentials are written to OS keyring when available and to `${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/credentials.env` with mode `0600`.
+or with the `darujme_login` MCP form tool. `DARUJME_ORGANIZATION_ID` is part of the login contract because Darujme API v1 requires `organizationId` in organization-scoped URLs and does not expose token introspection or organization discovery. Stored credentials are scoped to the canonical server process `cwd`: OS keyring service `darujme-mcp:<scope-id>` when available, plus `${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/scopes/<scope-id>/credentials.env` with mode `0600`. Legacy unscoped stores are not read.
 
 ## Run
 

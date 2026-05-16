@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from contextlib import suppress
+from hashlib import sha256
 from pathlib import Path
 
 from pydantic import AnyHttpUrl, Field, SecretStr
@@ -11,6 +12,7 @@ KEYRING_SERVICE = "darujme-mcp"
 KEYRING_API_ID_ACCOUNT = "api_id"
 KEYRING_API_SECRET_ACCOUNT = "api_secret"
 KEYRING_ORGANIZATION_ID_ACCOUNT = "organization_id"
+CREDENTIAL_SCOPE_ID_LENGTH = 16
 
 
 class Settings(BaseSettings):
@@ -32,7 +34,20 @@ class Settings(BaseSettings):
 
 def credentials_file_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "darujme-mcp" / "credentials.env"
+    return Path(base) / "darujme-mcp" / "scopes" / credential_scope_id() / "credentials.env"
+
+
+def credential_scope_cwd() -> Path:
+    return Path.cwd().resolve()
+
+
+def credential_scope_id() -> str:
+    scope = str(credential_scope_cwd()).encode("utf-8")
+    return sha256(scope).hexdigest()[:CREDENTIAL_SCOPE_ID_LENGTH]
+
+
+def keyring_service_name() -> str:
+    return f"{KEYRING_SERVICE}:{credential_scope_id()}"
 
 
 def _load_from_keyring() -> tuple[str, str, int] | None:
@@ -41,9 +56,10 @@ def _load_from_keyring() -> tuple[str, str, int] | None:
     except Exception:
         return None
     try:
-        api_id = keyring.get_password(KEYRING_SERVICE, KEYRING_API_ID_ACCOUNT)
-        api_secret = keyring.get_password(KEYRING_SERVICE, KEYRING_API_SECRET_ACCOUNT)
-        organization_id = keyring.get_password(KEYRING_SERVICE, KEYRING_ORGANIZATION_ID_ACCOUNT)
+        service = keyring_service_name()
+        api_id = keyring.get_password(service, KEYRING_API_ID_ACCOUNT)
+        api_secret = keyring.get_password(service, KEYRING_API_SECRET_ACCOUNT)
+        organization_id = keyring.get_password(service, KEYRING_ORGANIZATION_ID_ACCOUNT)
     except Exception:
         return None
     if not (api_id and api_secret and organization_id):
@@ -88,10 +104,11 @@ def store_credentials(api_id: str, api_secret: str, organization_id: int) -> Non
     try:
         import keyring
 
-        keyring.set_password(KEYRING_SERVICE, KEYRING_API_ID_ACCOUNT, api_id)
-        keyring.set_password(KEYRING_SERVICE, KEYRING_API_SECRET_ACCOUNT, api_secret)
+        service = keyring_service_name()
+        keyring.set_password(service, KEYRING_API_ID_ACCOUNT, api_id)
+        keyring.set_password(service, KEYRING_API_SECRET_ACCOUNT, api_secret)
         keyring.set_password(
-            KEYRING_SERVICE,
+            service,
             KEYRING_ORGANIZATION_ID_ACCOUNT,
             str(organization_id),
         )
