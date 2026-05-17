@@ -1,93 +1,94 @@
-# Tool Contract
+# Tool Reference
 
-## `darujme_login`
+Operational notes for maintainers running the darujme-mcp server. All
+runtime information that an LLM client needs to use the tools — query
+modes, parameter descriptions, the 3-level privacy hierarchy, settlement
+aggregate semantics, transaction states, error codes — is exported
+through the MCP JSON Schema and the `darujme_get_metadata` tool response.
+This file is for humans who maintain the server.
 
-Unified login tool. `mode` accepts `auto`, `direct`, `prefab`, or `web`.
-`auto` uses Prefab when the MCP client advertises Apps UI support, otherwise it
-returns a localhost web-login URL. `direct` accepts `api_id`, `api_secret`, and
-`organization_id` in the `credentials` object. The server validates with
-`GET /organization/{organizationId}/projects`, then stores credentials in the
-cwd-scoped local credential store. The organization ID is required because
-Darujme API v1 does not expose token introspection or organization discovery.
+## Read-only contract
 
-## `darujme_test_connection`
+All Darujme tools are read-only and use only Darujme API v1 read
+endpoints. No tool mutates donor, pledge, project, or promotion data.
+`darujme_login` only mutates local credential storage.
 
-Returns:
+## Authentication and credential storage
 
-```json
-{ "ok": true, "organization_id": 2, "error": null }
+`darujme_login` requires three values:
+
+- `api_id`
+- `api_secret`
+- `organization_id`
+
+The organization id is required because Darujme API v1 does not expose
+token introspection or organization discovery — credentials are organization-
+scoped in the URL. The server validates at login time via
+`GET /organization/{organization_id}/projects`.
+
+Credentials are stored in the cwd-scoped local credential store (system
+keyring with file fallback).
+
+### Pre-seeded credentials
+
+```bash
+export DARUJME_API_ID="..."
+export DARUJME_API_SECRET="..."
+export DARUJME_ORGANIZATION_ID="..."
 ```
 
-## `darujme_find_transactions`
+## Settings
 
-Query variants use `query_type` as a schema discriminator:
+| Variable | Default | Purpose |
+|---|---|---|
+| `DARUJME_BASE_URL` | `https://www.darujme.cz/api/v1/` | Override only for tests / sandboxes |
+| `DARUJME_TIMEOUT_SECONDS` | `30` | Per-request timeout |
 
-- `transaction_search`: calls `GET /organization/{organizationId}/transactions-by-filter`.
-- `transaction_by_ids`: calls `GET /organization/{organizationId}/transaction/{transactionId}` for each ID and itemizes errors.
-- `settlement_aggregate`: bank payout reconciliation path. Calls `transactions-by-filter` per settled day and returns organization payout rows grouped by outgoing bank account, outgoing variable symbol, and currency for bank statement matching.
+## Upstream endpoint map
 
-Transaction search filters include project IDs, promotion IDs,
-received/outgoing/failed dates, last modified timestamp, transaction states,
-`limit`, and `cursor`.
+For maintainers who need to trace MCP tool calls back to Darujme API v1
+URLs:
 
-Transaction date filters use `received_from`, `received_to`, `outgoing_from`,
-`outgoing_to`, `failed_from`, and `failed_to`. These are translated to the
-Darujme API parameters `fromReceivedDate`, `toReceivedDate`,
-`fromOutgoingDate`, `toOutgoingDate`, `fromFailedDate`, and `toFailedDate`.
+| MCP tool / mode | Upstream call |
+|---|---|
+| `darujme_find_transactions` + `transaction_search` | `GET /organization/{org}/transactions-by-filter` |
+| `darujme_find_transactions` + `transaction_by_ids` | `GET /organization/{org}/transaction/{id}` per id (itemized errors) |
+| `darujme_find_transactions` + `settlement_aggregate` | `GET /organization/{org}/transactions-by-filter` per settled day, aggregated locally |
+| `darujme_find_pledges` + `search` | `GET /organization/{org}/pledges-by-filter` |
+| `darujme_find_pledges` + `by_ids` | `GET /organization/{org}/pledge/{id}` per id |
+| `darujme_find_pledges` + `by_vs` | `GET /organization/{org}/pledges-by-vs/{vs}` |
+| `darujme_find_projects` + `search` | `GET /organization/{org}/projects` |
+| `darujme_find_projects` + `by_ids` | `GET /project/{id}` per id |
+| `darujme_find_promotions` + `search` | `GET /project/{id}/promotions` per project id |
+| `darujme_find_promotions` + `by_ids` | `GET /promotion/{id}` per id |
 
-Settlement aggregate queries use `settled_from` and `settled_to`; the MCP maps
-each day to Darujme's outgoing date filter because Darujme does not return a
-reliable outgoing date field on transactions. For bank statement matching, pass
-`bank_account`, `variable_symbol`, `currency`, and `amount` when those values
-are known. Aggregate organization payout rows expose
-`date`, `bank_account`, `variable_symbol`, `currency`, `amount`, `sent_total`,
-`fee_total`, `transaction_count`, and `transaction_ids`.
+## Settlement aggregate implementation notes
 
-```json
-{
-  "query_type": "settlement_aggregate",
-  "settled_from": "2026-03-10",
-  "settled_to": "2026-03-10",
-  "bank_account": "2603445200/2010",
-  "variable_symbol": "260310661",
-  "currency": "CZK",
-  "amount": "1926.00",
-  "limit": 100
-}
-```
+Darujme does not return a reliable outgoing-date field on transactions; the
+MCP maps each `settled_from`/`settled_to` date to Darujme's outgoing-date
+filter, fetches the matching transactions, and groups them locally by
+`(date, outgoing_bank_account, outgoing_variable_symbol, currency)` to
+produce one aggregate row per Fio incoming-transfer line.
 
-`control_totals` includes `sent_by_currency` and `outgoing_by_currency` so the
-donor-sent amount and organization payout amount are visible separately.
+`MAX_SETTLEMENT_RANGE_DAYS` caps the requested window (currently 31) to
+avoid pulling more than one month of donations per call.
 
-## `darujme_find_pledges`
+## Side effects to remember
 
-Query modes:
+`darujme_login` writes to keyring + scoped credential file. No tool mutates
+Darujme data; all reads are GET requests.
 
-- `search`: calls `GET /organization/{organizationId}/pledges-by-filter`.
-- `by_ids`: calls `GET /organization/{organizationId}/pledge/{pledgeId}` for each ID.
-- `by_vs`: calls `GET /organization/{organizationId}/pledges-by-vs/{vs}`.
+## Troubleshooting
 
-Search date filters use `from_pledged_date`, `to_pledged_date`,
-`received_from`, `received_to`, `outgoing_from`, and `outgoing_to`.
+| Symptom | Diagnosis |
+|---|---|
+| `not_configured` | Run `darujme_login` (or set the three `DARUJME_*` env vars and restart) |
+| `auth_error` | api_id / api_secret rejected; check the organization's API settings |
+| `not_found` | The requested transaction / pledge / project / promotion id does not exist for this organization |
+| `invalid_request` | Filter combination or date range invalid (e.g. settlement window > 31 days) |
+| `invalid_response` | Darujme returned an unexpected payload shape; report upstream |
+| `cursor_mismatch` | Filter set changed between paginated calls; restart pagination without `cursor` |
+| `network_error` | DNS / connect / timeout — verify `DARUJME_BASE_URL` and network |
 
-## `darujme_find_projects`
-
-Query modes:
-
-- `search`: calls `GET /organization/{organizationId}/projects`.
-- `by_ids`: calls `GET /project/{projectId}` for each ID.
-
-## `darujme_find_promotions`
-
-Query modes:
-
-- `search`: calls `GET /project/{projectId}/promotions` for one or more project IDs.
-- `by_ids`: calls `GET /promotion/{promotionId}` for each ID.
-
-## `darujme_prepare_donation_confirmations`
-
-Read-only helper that fetches eligible transactions and groups them by donor/pledge for downstream confirmation workflows. It has no Darujme side effects.
-
-## `darujme_get_metadata`
-
-Returns query modes, transaction/project states, payment methods, currencies, privacy controls, limits, error codes, and read-only side-effect notes.
+The complete error-code catalog and the privacy-level table are in
+`darujme_get_metadata`.
