@@ -121,13 +121,24 @@ class PrivacyMixin(BaseModel):
     include_donor_pii: bool = Field(
         default=False,
         description=(
-            "Return donor names, email, phone, address, company IDs, custom fields, and "
-            "confirmation recipient fields. Defaults to redacted."
+            "Privacy level 1 → 2. Defaults to `false` (level 1, redacted): donor names, "
+            "email, phone, address, company IDs, custom fields, and confirmation "
+            "recipient fields are stripped from the response. Set to `true` (level 2, "
+            "personal) only when the downstream task — donor confirmations, tax receipts, "
+            "audit-level export — actually requires the PII. Czech law 185/2009 requires "
+            "names/addresses for donation receipts; internal accounting can usually stay "
+            "at level 1."
         ),
     )
     include_raw: bool = Field(
         default=False,
-        description="Return raw Darujme payloads. Requires include_donor_pii=true.",
+        description=(
+            "Privacy level 2 → 3. Defaults to `false`. Set to `true` to include the raw "
+            "Darujme API payload alongside the normalized fields — useful for debugging "
+            "schema drift or accessing fields not yet normalized. Requires "
+            "`include_donor_pii=true` (enforced by a validator) so raw donor data is not "
+            "exposed by accident at level 1."
+        ),
     )
 
     @model_validator(mode="after")
@@ -154,19 +165,81 @@ class TransactionSearchQuery(PrivacyMixin):
         },
     )
 
-    query_type: Literal["transaction_search"]
-    project_ids: list[int] = Field(default_factory=list)
-    promotion_ids: list[int] = Field(default_factory=list)
-    received_from: date | None = None
-    received_to: date | None = None
-    outgoing_from: date | None = None
-    outgoing_to: date | None = None
-    failed_from: date | None = None
-    failed_to: date | None = None
-    last_modified_date_time: str | None = None
-    transaction_states: list[TransactionState] = Field(default_factory=list)
-    limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
-    cursor: str | None = None
+    query_type: Literal["transaction_search"] = Field(
+        description=(
+            "Donor-level transaction search. Returns paginated normalized donations "
+            "filtered by date / state / project / promotion (PII redacted unless "
+            "include_donor_pii=true). Use for audit, donor-level export, project totals."
+        ),
+    )
+    project_ids: list[int] = Field(
+        default_factory=list,
+        description="Filter to donations belonging to any of these Darujme project ids.",
+    )
+    promotion_ids: list[int] = Field(
+        default_factory=list,
+        description="Filter to donations belonging to any of these promotion ids.",
+    )
+    received_from: date | None = Field(
+        default=None,
+        description=(
+            "Inclusive start (ISO YYYY-MM-DD) for when the donor's payment arrived at "
+            "Darujme. NOT the same as outgoing_from — those bracket the Darujme→org leg."
+        ),
+    )
+    received_to: date | None = Field(
+        default=None,
+        description="Inclusive end (ISO YYYY-MM-DD) for when the donor's payment arrived at Darujme.",
+    )
+    outgoing_from: date | None = Field(
+        default=None,
+        description=(
+            "Inclusive start (ISO YYYY-MM-DD) for when Darujme settled the donation onto "
+            "the organization's bank account. Use this to align donor transactions with "
+            "Fio incoming transfers. For a quick payout-level rollup use "
+            "query_type='settlement_aggregate' instead."
+        ),
+    )
+    outgoing_to: date | None = Field(
+        default=None,
+        description="Inclusive end (ISO YYYY-MM-DD) for when Darujme settled to the org account.",
+    )
+    failed_from: date | None = Field(
+        default=None,
+        description="Inclusive start (ISO YYYY-MM-DD) for the donation failure date.",
+    )
+    failed_to: date | None = Field(
+        default=None,
+        description="Inclusive end (ISO YYYY-MM-DD) for the donation failure date.",
+    )
+    last_modified_date_time: str | None = Field(
+        default=None,
+        description=(
+            "Filter to donations modified on or after this timestamp (ISO 8601). Useful "
+            "for incremental sync."
+        ),
+    )
+    transaction_states: list[TransactionState] = Field(
+        default_factory=list,
+        description=(
+            "Filter by Darujme transaction state (success, sent_to_organization, "
+            "pending_confirmation, failure, …). See darujme_get_metadata.transaction_states "
+            "for the full list. Empty means all states."
+        ),
+    )
+    limit: int = Field(
+        default=100,
+        ge=1,
+        le=MAX_PAGE_LIMIT,
+        description="Maximum transactions returned per page (default 100).",
+    )
+    cursor: str | None = Field(
+        default=None,
+        description=(
+            "Pagination cursor from the previous response's next_cursor. Pass back with "
+            "the same filters; the server rejects the cursor if any filter drifts."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_dates(self) -> TransactionSearchQuery:
@@ -209,8 +282,18 @@ class TransactionByIdsQuery(PrivacyMixin):
         },
     )
 
-    query_type: Literal["transaction_by_ids"]
-    ids: list[int] = Field(min_length=1, max_length=100)
+    query_type: Literal["transaction_by_ids"] = Field(
+        description=(
+            "Direct lookup of specific transactions by id. Use with ids from webhooks, "
+            "confirmation e-mails, or a prior settlement_aggregate drill-down. Up to 100 "
+            "ids per call."
+        ),
+    )
+    ids: list[int] = Field(
+        min_length=1,
+        max_length=100,
+        description="Transaction ids to fetch (1–100 per call). Order is preserved.",
+    )
 
     def filter_hash(self) -> str:
         return _filter_hash(
@@ -244,32 +327,76 @@ class SettlementAggregateQuery(BaseModel):
 
     query_type: Literal["settlement_aggregate"] = Field(
         description=(
-            "Bank payout reconciliation path. Returns organization payout rows for bank "
-            "statement matching."
+            "⭐ Killer feature for Fio bank reconciliation. Aggregates transactions into "
+            "organization payout rows — one row per Fio incoming transfer from Darujme — "
+            "and returns outgoing_bank_account + outgoing_variable_symbol that exactly "
+            "match what Fio shows on the day Darujme settles. Does NOT return individual "
+            "donor records: use transaction_search or transaction_by_ids when you need "
+            "donor-level detail (the aggregate row exposes transaction_ids for that)."
         )
     )
-    settled_from: date = Field(description="First organization payout date to aggregate.")
-    settled_to: date = Field(description="Last organization payout date to aggregate.")
+    settled_from: date = Field(
+        description=(
+            "Inclusive start (ISO YYYY-MM-DD) of the Darujme-to-org payout date window. "
+            "Match against the date on Fio's incoming transfer row."
+        ),
+    )
+    settled_to: date = Field(
+        description=(
+            "Inclusive end (ISO YYYY-MM-DD) of the payout date window. The window must "
+            "not exceed MAX_SETTLEMENT_RANGE_DAYS (currently 31)."
+        ),
+    )
     bank_account: str | None = Field(
         default=None,
-        description="Optional organization payout bank account filter in account/bank_code form.",
+        description=(
+            "Optional filter on the organization's bank account that received the payout, "
+            "in Czech account/bank_code form (e.g. '2603445200/2010'). Use when you have "
+            "multiple receiving accounts and need to isolate one specific Fio line."
+        ),
     )
     variable_symbol: str | None = Field(
         default=None,
-        description="Optional organization payout variable symbol filter.",
+        description=(
+            "Optional filter on the variable_symbol Darujme used on the outgoing payout "
+            "(matches the VS on the Fio incoming transfer for this settlement day). NOT "
+            "the donor's payment VS — that's only on individual transactions returned by "
+            "query_type='transaction_search'."
+        ),
     )
     currency: str | None = Field(
         default=None,
-        description="Optional payout currency filter such as CZK.",
+        description="Optional payout currency filter (e.g. 'CZK', 'EUR').",
     )
     amount: Decimal | None = Field(
         default=None,
-        description="Optional organization payout amount for bank statement matching.",
+        description=(
+            "Optional filter on the amount the organization received in the payout "
+            "(post-Darujme-fees), as a decimal. Combine with settled_from/to and "
+            "variable_symbol to uniquely identify a payout."
+        ),
     )
-    project_ids: list[int] = Field(default_factory=list)
-    promotion_ids: list[int] = Field(default_factory=list)
-    limit: int = Field(default=100, ge=1, le=MAX_PAGE_LIMIT)
-    cursor: str | None = None
+    project_ids: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Filter to payouts whose donor transactions belong to any of these project "
+            "ids. Aggregation is still per-payout, not per-project."
+        ),
+    )
+    promotion_ids: list[int] = Field(
+        default_factory=list,
+        description="Filter to payouts whose donor transactions belong to any of these promotion ids.",
+    )
+    limit: int = Field(
+        default=100,
+        ge=1,
+        le=MAX_PAGE_LIMIT,
+        description="Maximum payout aggregate rows per page (default 100).",
+    )
+    cursor: str | None = Field(
+        default=None,
+        description="Pagination cursor from a previous response's next_cursor (same filter set required).",
+    )
 
     @model_validator(mode="after")
     def validate_dates(self) -> SettlementAggregateQuery:
@@ -748,7 +875,11 @@ def _requires_login(fn):
 @mcp.tool
 @_requires_login
 async def darujme_test_connection(ctx: Context) -> TestConnectionResult:
-    """Verify that configured Darujme credentials can perform a read-only API call."""
+    """Verify configured Darujme credentials (api_id, api_secret, organization_id) by
+    issuing one read-only API call.
+
+    No state changes. Use to diagnose auth failures before running other tools.
+    """
     return await _test_connection(_client_from_context(ctx))
 
 
@@ -761,7 +892,36 @@ async def darujme_find_transactions(
     ],
     ctx: Context,
 ) -> FindTransactionsResult | FindSettlementAggregatesResult:
-    """Find Darujme transactions or settlement aggregate organization payout rows."""
+    """Find Darujme donation transactions by filter or by ID, or aggregate them into
+    bank-payout rows for Fio reconciliation. Three modes selected via `query.query_type`:
+
+    1. `transaction_search` — donor-level search by received_at / outgoing_at / state /
+       project / promotion. Returns paginated normalized donations (PII redacted unless
+       include_donor_pii=true). Use for audit, donor-level export, project totals.
+
+    2. `transaction_by_ids` — bulk fetch up to 100 specific transaction IDs. Use with IDs
+       from webhooks, confirmation e-mails, or a prior settlement_aggregate drill-down.
+
+    3. `settlement_aggregate` — ⭐ killer feature for monthly bank reconciliation. Aggregates
+       donations into organization PAYOUT rows (one row per Fio incoming transfer from
+       Darujme), returning `bank_account` and `variable_symbol` that exactly match what
+       Fio shows on the day Darujme settles. Does NOT return individual donor records —
+       use `transaction_search` (or `transaction_by_ids` with the returned
+       `transaction_ids`) when donor-level detail is required.
+
+    Privacy: donor PII is redacted by default. Set `include_donor_pii=true` only when the
+    downstream task (confirmations, tax receipts, audit) actually requires it. See
+    PrivacyMixin Field descriptions and darujme_get_metadata.privacy for the 3-level
+    hierarchy.
+
+    EXAMPLE (Fio reconciliation): a Fio incoming line shows `date=2026-05-10`,
+    `amount=1926.00 CZK`, VS=`260510661`, account=`2603445200/2010`. Call this tool with:
+        query_type='settlement_aggregate', settled_from='2026-05-10',
+        settled_to='2026-05-10', bank_account='2603445200/2010',
+        variable_symbol='260510661'
+    → returns the matching aggregate row plus `transaction_ids` you can drill down via
+    query_type='transaction_by_ids'.
+    """
     return await _find_transactions(_client_from_context(ctx), query)
 
 
@@ -774,7 +934,18 @@ async def darujme_find_pledges(
     ],
     ctx: Context,
 ) -> FindPledgesResult:
-    """Find Darujme pledges by search filters, known pledge IDs, or variable symbol."""
+    """Find Darujme recurring pledges (monthly / quarterly / one-time future commitments)
+    by filter, by ID, or by a donation's variable_symbol.
+
+    Modes via `query.mode`:
+      - `search` — filter by date range, project, promotion, payment method, etc.
+      - `by_ids` — fetch specific pledge ids (1–100 per call).
+      - `by_vs` — look up pledges by the VS of a donation they generated (exact match).
+
+    Use for audit of pledge state, matching incoming payments to pledge records, or
+    pledge-level reporting. Donor PII is redacted by default; opt in via
+    `include_donor_pii=true` for outreach use cases.
+    """
     return await _find_pledges(_client_from_context(ctx), query)
 
 
@@ -787,7 +958,16 @@ async def darujme_find_projects(
     ],
     ctx: Context,
 ) -> FindProjectsResult:
-    """Find Darujme projects by organization listing or known project IDs."""
+    """Find Darujme fundraising projects by listing or by explicit project ids.
+
+    Projects are top-level fundraising entities (e.g. 'Annual Food Drive 2026');
+    promotions are peer-to-peer variants within a project (see darujme_find_promotions).
+
+    Modes via `query.mode`:
+      - `search` — list projects, optionally filtered by lifecycle `state` (active /
+        pending / not_active).
+      - `by_ids` — fetch specific project records (1–100 per call).
+    """
     return await _find_projects(_client_from_context(ctx), query)
 
 
@@ -800,7 +980,14 @@ async def darujme_find_promotions(
     ],
     ctx: Context,
 ) -> FindPromotionsResult:
-    """Find Darujme peer-to-peer promotions by project listing or known promotion IDs."""
+    """Find Darujme peer-to-peer promotions inside one or more projects (e.g. individual
+    "Runners for Hope" fundraisers under a charity marathon).
+
+    Each promotion has its own donors and pledge pool. Modes via `query.mode`:
+      - `search` — list promotions for one or more projects (`project_id` or
+        `project_ids` required).
+      - `by_ids` — fetch specific promotion records (1–100 per call).
+    """
     return await _find_promotions(_client_from_context(ctx), query)
 
 
@@ -818,13 +1005,35 @@ async def darujme_prepare_donation_confirmations(
     ],
     ctx: Context,
 ) -> DonationConfirmationsResult:
-    """Prepare read-only donation confirmation groups from transaction and pledge data."""
+    """Group eligible donations by donor (email / name / company id / pledge) and sum
+    amounts by currency for downstream confirmation workflows.
+
+    ⚠ This tool does NOT generate PDFs or send emails — it only assembles the data your
+    client / agent uses to template confirmations. Workflow:
+
+    1. Call this tool with received_from / received_to and optional project / promotion
+       filters.
+    2. Iterate the returned groups; for each group build your confirmation text / PDF /
+       email externally.
+    3. Send or print confirmations outside this MCP.
+
+    Defaults: `transaction_states = ['success', 'success_money_on_account',
+    'sent_to_organization']` (only completed donations, excluding pending / failed).
+    Override `transaction_states` if you need a different scope.
+    """
     return await _prepare_donation_confirmations(_client_from_context(ctx), request)
 
 
 @mcp.tool
 async def darujme_get_metadata() -> MetadataResult:
-    """Return Darujme states, query modes, privacy controls, limits, and side-effect notes."""
+    """Return the Rosetta Stone for interpreting Darujme MCP responses.
+
+    Covers query_modes (which tool / which mode to call for each scenario), transaction
+    states, project states, payment methods, currencies, privacy levels (the 3-level
+    hierarchy enforced by PrivacyMixin), API limits, error codes, and side-effect notes.
+
+    Read-only with no side effects. Call once at session start and cache the result.
+    """
     return _metadata_result()
 
 
@@ -1417,12 +1626,57 @@ def _metadata_result() -> MetadataResult:
         ],
         currencies=["CZK", "EUR", "GBP", "USD"],
         privacy={
-            "default": "Donor PII is redacted.",
-            "include_donor_pii": (
-                "Required for names, email, phone, address, company IDs, custom fields, "
-                "and confirmation recipient fields."
-            ),
-            "include_raw": "Requires include_donor_pii=true.",
+            "default": "Donor PII is redacted (privacy level 1).",
+            "levels": [
+                {
+                    "level": 1,
+                    "name": "redacted",
+                    "flag_values": {"include_donor_pii": False, "include_raw": False},
+                    "description": (
+                        "Default. Donor PII stripped (names, email, phone, address, "
+                        "company_id, custom_fields, confirmation_recipient). Use for "
+                        "audit, bulk export, summary stats — minimizes PII storage."
+                    ),
+                    "visible_donor_fields": [],
+                },
+                {
+                    "level": 2,
+                    "name": "personal",
+                    "flag_values": {"include_donor_pii": True, "include_raw": False},
+                    "description": (
+                        "Full donor PII included. Use for donor confirmations, customer "
+                        "service, tax receipt generation."
+                    ),
+                    "visible_donor_fields": [
+                        "name",
+                        "email",
+                        "phone",
+                        "address",
+                        "company_id",
+                        "custom_fields",
+                        "confirmation_recipient",
+                    ],
+                },
+                {
+                    "level": 3,
+                    "name": "personal_with_raw",
+                    "flag_values": {"include_donor_pii": True, "include_raw": True},
+                    "description": (
+                        "Adds raw Darujme JSON payload. Rare — use only for debugging or "
+                        "integrations that need the unmodified API shape."
+                    ),
+                    "visible_donor_fields": [
+                        "name",
+                        "email",
+                        "phone",
+                        "address",
+                        "company_id",
+                        "custom_fields",
+                        "confirmation_recipient",
+                        "raw",
+                    ],
+                },
+            ],
         },
         limits=MetadataLimits(
             max_page_limit=MAX_PAGE_LIMIT,
