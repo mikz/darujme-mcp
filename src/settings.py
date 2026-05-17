@@ -32,9 +32,17 @@ class Settings(BaseSettings):
     )
 
 
+def credentials_scoped_to_cwd() -> bool:
+    raw = os.environ.get("DARUJME_SCOPED_CREDENTIALS", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def credentials_file_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "darujme-mcp" / "scopes" / credential_scope_id() / "credentials.env"
+    root = Path(base) / "darujme-mcp"
+    if credentials_scoped_to_cwd():
+        return root / "scopes" / credential_scope_id() / "credentials.env"
+    return root / "credentials.env"
 
 
 def credential_scope_cwd() -> Path:
@@ -47,7 +55,9 @@ def credential_scope_id() -> str:
 
 
 def keyring_service_name() -> str:
-    return f"{KEYRING_SERVICE}:{credential_scope_id()}"
+    if credentials_scoped_to_cwd():
+        return f"{KEYRING_SERVICE}:{credential_scope_id()}"
+    return KEYRING_SERVICE
 
 
 def _load_from_keyring() -> tuple[str, str, int] | None:

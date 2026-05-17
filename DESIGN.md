@@ -4,7 +4,7 @@
 
 - `src/server.py` owns FastMCP tool contracts, cursor validation, result models for tool-only metadata, and login form wiring.
 - `src/client.py` is a narrow Darujme API v1 wrapper. It only calls read endpoints and adds `apiId` and `apiSecret` as query parameters.
-- `src/settings.py` loads `.env`, then a credential store scoped to the canonical server process `cwd`: OS keyring plus a `0600` fallback credential file. Legacy unscoped stores are not read.
+- `src/settings.py` loads `.env`, then a global credential store: OS keyring service `darujme-mcp` plus a `0600` fallback credential file at `~/.config/darujme-mcp/credentials.env`. Setting `DARUJME_SCOPED_CREDENTIALS=1` isolates credentials per server process `cwd`.
 - `src/normalization.py` converts Darujme native payloads to agent-friendly records with generic source fields.
 - `src/models.py` contains normalized Pydantic response objects.
 

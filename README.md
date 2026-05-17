@@ -25,10 +25,12 @@ other clients can use `mode: "direct"` with `api_id`, `api_secret`, and
 `organization_id` in the tool call, or a localhost web form.
 `DARUJME_ORGANIZATION_ID` is part of the login contract because Darujme API v1
 requires `organizationId` in organization-scoped URLs and does not expose token
-introspection or organization discovery. Stored credentials are scoped to the
-canonical server process `cwd`: OS keyring service `darujme-mcp:<scope-id>` when
-available, plus `${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/scopes/<scope-id>/credentials.env`
-with mode `0600`. Legacy unscoped stores are not read.
+introspection or organization discovery. Stored credentials live globally per
+user: OS keyring service `darujme-mcp` when available, plus
+`${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/credentials.env` with mode `0600`.
+Set `DARUJME_SCOPED_CREDENTIALS=1` to isolate per server process `cwd`: keyring
+service becomes `darujme-mcp:<scope-id>` and the fallback file moves to
+`${XDG_CONFIG_HOME:-$HOME/.config}/darujme-mcp/scopes/<scope-id>/credentials.env`.
 
 ## Run
 
