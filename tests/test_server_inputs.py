@@ -32,7 +32,7 @@ from tests.fixtures import sample_project, sample_transaction
 def settings() -> Settings:
     return Settings(
         _env_file=None,
-        DARUJME_API_ID="api-id",
+        DARUJME_API_ID="42",
         DARUJME_API_SECRET="secret",
         DARUJME_ORGANIZATION_ID=2,
         DARUJME_TIMEOUT_SECONDS=10,

@@ -28,11 +28,11 @@ def test_loads_stored_credentials_from_fallback_file(
         "keyring",
         SimpleNamespace(set_password=lambda service, account, password: None),
     )
-    store_credentials("api-id", "secret", 2)
+    store_credentials("42", "secret", 2)
 
     loaded = load_settings()
 
-    assert loaded.darujme_api_id == "api-id"
+    assert loaded.darujme_api_id == "42"
     assert loaded.darujme_api_secret is not None
     assert loaded.darujme_api_secret.get_secret_value() == "secret"
     assert loaded.darujme_organization_id == 2
@@ -69,7 +69,7 @@ def test_keyring_service_is_scoped_to_cwd(monkeypatch, tmp_path: Path) -> None:
         ),
     )
 
-    store_credentials("api-id", "secret", 2)
+    store_credentials("42", "secret", 2)
 
     services = {service for service, _ in stored}
     assert services == {keyring_service_name()}

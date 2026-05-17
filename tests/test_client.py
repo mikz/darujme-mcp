@@ -12,7 +12,7 @@ from tests.fixtures import sample_project, sample_transaction
 def settings() -> Settings:
     return Settings(
         _env_file=None,
-        DARUJME_API_ID="api-id",
+        DARUJME_API_ID="42",
         DARUJME_API_SECRET="secret",
         DARUJME_ORGANIZATION_ID=2,
         DARUJME_TIMEOUT_SECONDS=10,
@@ -39,7 +39,7 @@ async def test_search_transactions_uses_auth_and_filter_params() -> None:
     assert result[0]["transactionId"] == 7654321
     assert route.called
     request = route.calls.last.request
-    assert request.url.params["apiId"] == "api-id"
+    assert request.url.params["apiId"] == "42"
     assert request.url.params["apiSecret"] == "secret"
     assert request.url.params["fromReceivedDate"] == "2026-05-01"
     assert request.url.params["pageSize"] == "10"

@@ -146,7 +146,13 @@ class DarujmeClient:
         assert self._api_id is not None
         assert self._api_secret is not None
         merged = dict(params or {})
-        merged["apiId"] = self._api_id
+        try:
+            merged["apiId"] = int(self._api_id)
+        except (TypeError, ValueError) as exc:
+            raise DarujmeError(
+                f"darujme_api_id must be an integer (got {self._api_id!r})",
+                code="invalid_api_id",
+            ) from exc
         merged["apiSecret"] = self._api_secret.get_secret_value()
         return merged
 
