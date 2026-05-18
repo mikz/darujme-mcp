@@ -5,18 +5,20 @@ import respx
 from httpx import Response
 
 from client import DarujmeClient, DarujmeError
-from settings import Settings
+from settings import DarujmeCredentials, Settings
 from tests.fixtures import sample_project, sample_transaction
 
 
 def settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        DARUJME_API_ID="42",
-        DARUJME_API_SECRET="secret",
-        DARUJME_ORGANIZATION_ID=2,
-        DARUJME_TIMEOUT_SECONDS=10,
-    )
+    return Settings(_env_file=None, DARUJME_TIMEOUT_SECONDS=10)
+
+
+def credentials() -> DarujmeCredentials:
+    return DarujmeCredentials(api_id=42, api_secret="secret", organization_id=2)
+
+
+def _client() -> DarujmeClient:
+    return DarujmeClient(settings(), credentials())
 
 
 @respx.mock
@@ -24,7 +26,7 @@ async def test_search_transactions_uses_auth_and_filter_params() -> None:
     route = respx.get("https://www.darujme.cz/api/v1/organization/2/transactions-by-filter").mock(
         return_value=Response(200, json={"transactions": [sample_transaction()]})
     )
-    client = DarujmeClient(settings())
+    client = _client()
 
     result = await client.search_transactions(
         {
@@ -51,7 +53,7 @@ async def test_project_listing_shape() -> None:
     respx.get("https://www.darujme.cz/api/v1/organization/2/projects").mock(
         return_value=Response(200, json={"count": 1, "projects": [sample_project()]})
     )
-    client = DarujmeClient(settings())
+    client = _client()
 
     result = await client.list_projects({"state": "active"})
     await client.aclose()
@@ -64,7 +66,7 @@ async def test_maps_auth_error_without_leaking_secret() -> None:
     respx.get("https://www.darujme.cz/api/v1/organization/2/projects").mock(
         return_value=Response(403, text="forbidden")
     )
-    client = DarujmeClient(settings())
+    client = _client()
 
     with pytest.raises(DarujmeError) as error:
         await client.test_connection()

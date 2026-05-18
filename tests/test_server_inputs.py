@@ -25,18 +25,20 @@ from server import (
     _pledge_params,
     _transaction_params,
 )
-from settings import Settings
+from settings import DarujmeCredentials, Settings
 from tests.fixtures import sample_project, sample_transaction
 
 
 def settings() -> Settings:
-    return Settings(
-        _env_file=None,
-        DARUJME_API_ID="42",
-        DARUJME_API_SECRET="secret",
-        DARUJME_ORGANIZATION_ID=2,
-        DARUJME_TIMEOUT_SECONDS=10,
-    )
+    return Settings(_env_file=None, DARUJME_TIMEOUT_SECONDS=10)
+
+
+def credentials() -> DarujmeCredentials:
+    return DarujmeCredentials(api_id=42, api_secret="secret", organization_id=2)
+
+
+def _client() -> DarujmeClient:
+    return DarujmeClient(settings(), credentials())
 
 
 def test_query_rejects_unknown_keys() -> None:
@@ -117,7 +119,7 @@ async def test_find_transactions_pages_with_opaque_cursor() -> None:
             },
         )
     )
-    client = DarujmeClient(settings())
+    client = _client()
 
     result = await _find_transactions(
         client,
@@ -138,7 +140,7 @@ async def test_find_transactions_pages_with_opaque_cursor() -> None:
 
 
 async def test_cursor_filter_drift_is_rejected() -> None:
-    client = DarujmeClient(settings())
+    client = _client()
     original = TransactionSearchQuery(
         query_type="transaction_search", received_from=date(2026, 5, 1)
     )
@@ -188,7 +190,7 @@ async def test_settlement_aggregate_groups_one_day_outgoing_transactions() -> No
             },
         )
     )
-    client = DarujmeClient(settings())
+    client = _client()
 
     result = await _find_transactions(
         client,
@@ -245,7 +247,7 @@ async def test_find_projects_by_id_itemizes_errors() -> None:
     respx.get("https://www.darujme.cz/api/v1/project/9999").mock(
         return_value=Response(404, text="not found")
     )
-    client = DarujmeClient(settings())
+    client = _client()
 
     result = await _find_projects(client, FindProjectsQuery(mode="by_ids", ids=[4563, 9999]))
     await client.aclose()

@@ -10,29 +10,25 @@ from server import (
     _find_transactions,
     _test_connection,
 )
-from settings import Settings
+from settings import DarujmeCredentials, Settings, load_credentials
 
 pytestmark = pytest.mark.e2e
 
 
-def live_settings() -> Settings:
+def live_setup() -> tuple[Settings, DarujmeCredentials]:
     settings = Settings()
-    missing = [
-        name
-        for name, value in [
-            ("DARUJME_API_ID", settings.darujme_api_id),
-            ("DARUJME_API_SECRET", settings.darujme_api_secret),
-            ("DARUJME_ORGANIZATION_ID", settings.darujme_organization_id),
-        ]
-        if value in (None, "")
-    ]
-    if missing:
-        pytest.skip(f"Missing live Darujme credentials: {', '.join(missing)}")
-    return settings
+    credentials = load_credentials(settings)
+    if credentials is None:
+        pytest.skip(
+            "Missing live Darujme credentials: set DARUJME_API_ID, DARUJME_API_SECRET, "
+            "DARUJME_ORGANIZATION_ID via env, keyring, or ~/.config/darujme-mcp/credentials.env."
+        )
+    return settings, credentials
 
 
 async def test_live_connection_and_read_only_searches() -> None:
-    client = DarujmeClient(live_settings())
+    settings, credentials = live_setup()
+    client = DarujmeClient(settings, credentials)
     try:
         connection = await _test_connection(client)
         assert connection.ok is True
@@ -55,9 +51,9 @@ async def test_live_connection_and_read_only_searches() -> None:
 
 
 async def test_live_invalid_secret_returns_structured_auth_error() -> None:
-    settings = live_settings()
-    settings.darujme_api_secret = type(settings.darujme_api_secret)("invalid-secret")
-    client = DarujmeClient(settings)
+    settings, credentials = live_setup()
+    bad_credentials = credentials.model_copy(update={"api_secret": "invalid-secret"})
+    client = DarujmeClient(settings, bad_credentials)
     try:
         result = await _test_connection(client)
         assert result.ok is False

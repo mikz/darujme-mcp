@@ -5,7 +5,7 @@ from contextlib import suppress
 from hashlib import sha256
 from pathlib import Path
 
-from pydantic import AnyHttpUrl, Field, SecretStr
+from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 KEYRING_SERVICE = "darujme-mcp"
@@ -30,6 +30,14 @@ class Settings(BaseSettings):
         alias="DARUJME_TIMEOUT_SECONDS",
         gt=0,
     )
+
+
+class DarujmeCredentials(BaseModel):
+    """Validated Darujme API credentials. Construction fails for non-integer api_id or organization_id."""
+
+    api_id: int = Field(ge=1, description="Darujme API key ID (integer assigned by Darujme)")
+    api_secret: SecretStr = Field(description="Darujme API secret")
+    organization_id: int = Field(ge=1, description="Darujme organization ID")
 
 
 def credentials_scoped_to_cwd() -> bool:
@@ -60,7 +68,7 @@ def keyring_service_name() -> str:
     return KEYRING_SERVICE
 
 
-def _load_from_keyring() -> tuple[str, str, int] | None:
+def _load_from_keyring() -> DarujmeCredentials | None:
     try:
         import keyring
     except Exception:
@@ -75,12 +83,16 @@ def _load_from_keyring() -> tuple[str, str, int] | None:
     if not (api_id and api_secret and organization_id):
         return None
     try:
-        return api_id, api_secret, int(organization_id)
-    except ValueError:
+        return DarujmeCredentials(
+            api_id=api_id,
+            api_secret=api_secret,
+            organization_id=organization_id,
+        )
+    except ValidationError:
         return None
 
 
-def _load_from_file() -> tuple[str, str, int] | None:
+def _load_from_file() -> DarujmeCredentials | None:
     cfg = credentials_file_path()
     if not cfg.is_file():
         return None
@@ -101,27 +113,53 @@ def _load_from_file() -> tuple[str, str, int] | None:
     if not (api_id and api_secret and organization_id):
         return None
     try:
-        return api_id, api_secret, int(organization_id)
-    except ValueError:
+        return DarujmeCredentials(
+            api_id=api_id,
+            api_secret=api_secret,
+            organization_id=organization_id,
+        )
+    except ValidationError:
         return None
 
 
-def load_stored_credentials() -> tuple[str, str, int] | None:
-    return _load_from_keyring() or _load_from_file()
+def _credentials_from_settings(settings: Settings) -> DarujmeCredentials | None:
+    if not (
+        settings.darujme_api_id
+        and settings.darujme_api_secret
+        and settings.darujme_organization_id is not None
+    ):
+        return None
+    try:
+        return DarujmeCredentials(
+            api_id=settings.darujme_api_id,
+            api_secret=settings.darujme_api_secret,
+            organization_id=settings.darujme_organization_id,
+        )
+    except ValidationError:
+        return None
 
 
-def store_credentials(api_id: str, api_secret: str, organization_id: int) -> None:
+def load_credentials(settings: Settings) -> DarujmeCredentials | None:
+    """Resolve credentials in priority order: env (via Settings) → keyring → file. Invalid sources skip to next."""
+    return (
+        _credentials_from_settings(settings)
+        or _load_from_keyring()
+        or _load_from_file()
+    )
+
+
+def store_credentials(credentials: DarujmeCredentials) -> None:
+    api_id_str = str(credentials.api_id)
+    api_secret_str = credentials.api_secret.get_secret_value()
+    organization_id_str = str(credentials.organization_id)
+
     try:
         import keyring
 
         service = keyring_service_name()
-        keyring.set_password(service, KEYRING_API_ID_ACCOUNT, api_id)
-        keyring.set_password(service, KEYRING_API_SECRET_ACCOUNT, api_secret)
-        keyring.set_password(
-            service,
-            KEYRING_ORGANIZATION_ID_ACCOUNT,
-            str(organization_id),
-        )
+        keyring.set_password(service, KEYRING_API_ID_ACCOUNT, api_id_str)
+        keyring.set_password(service, KEYRING_API_SECRET_ACCOUNT, api_secret_str)
+        keyring.set_password(service, KEYRING_ORGANIZATION_ID_ACCOUNT, organization_id_str)
     except Exception:
         pass
 
@@ -130,9 +168,9 @@ def store_credentials(api_id: str, api_secret: str, organization_id: int) -> Non
     cfg.write_text(
         "\n".join(
             [
-                f"DARUJME_API_ID={api_id}",
-                f"DARUJME_API_SECRET={api_secret}",
-                f"DARUJME_ORGANIZATION_ID={organization_id}",
+                f"DARUJME_API_ID={api_id_str}",
+                f"DARUJME_API_SECRET={api_secret_str}",
+                f"DARUJME_ORGANIZATION_ID={organization_id_str}",
                 "",
             ]
         ),
@@ -143,21 +181,4 @@ def store_credentials(api_id: str, api_secret: str, organization_id: int) -> Non
 
 
 def load_settings() -> Settings:
-    settings = Settings()
-    if (
-        settings.darujme_api_id
-        and settings.darujme_api_secret
-        and settings.darujme_organization_id is not None
-    ):
-        return settings
-    stored = load_stored_credentials()
-    if stored is None:
-        return settings
-    api_id, api_secret, organization_id = stored
-    if not settings.darujme_api_id:
-        settings.darujme_api_id = api_id
-    if not settings.darujme_api_secret:
-        settings.darujme_api_secret = SecretStr(api_secret)
-    if settings.darujme_organization_id is None:
-        settings.darujme_organization_id = organization_id
-    return settings
+    return Settings()

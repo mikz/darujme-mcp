@@ -5,15 +5,24 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+from pydantic import SecretStr, ValidationError
+
 import settings as settings_module
 from settings import (
     KEYRING_SERVICE,
+    DarujmeCredentials,
+    Settings,
     credential_scope_id,
     credentials_file_path,
     keyring_service_name,
-    load_settings,
+    load_credentials,
     store_credentials,
 )
+
+
+def _creds(api_id: int = 42, secret: str = "secret", org_id: int = 2) -> DarujmeCredentials:
+    return DarujmeCredentials(api_id=api_id, api_secret=SecretStr(secret), organization_id=org_id)
 
 
 def test_loads_stored_credentials_from_fallback_file(
@@ -28,15 +37,47 @@ def test_loads_stored_credentials_from_fallback_file(
         "keyring",
         SimpleNamespace(set_password=lambda service, account, password: None),
     )
-    store_credentials("42", "secret", 2)
+    store_credentials(_creds(api_id=42, secret="secret", org_id=2))
 
-    loaded = load_settings()
+    loaded = load_credentials(Settings())
 
-    assert loaded.darujme_api_id == "42"
-    assert loaded.darujme_api_secret is not None
-    assert loaded.darujme_api_secret.get_secret_value() == "secret"
-    assert loaded.darujme_organization_id == 2
+    assert loaded is not None
+    assert loaded.api_id == 42
+    assert loaded.api_secret.get_secret_value() == "secret"
+    assert loaded.organization_id == 2
     assert credentials_file_path().stat().st_mode & 0o777 == 0o600
+
+
+def test_invalid_keyring_credentials_fall_through_to_file(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setitem(
+        sys.modules,
+        "keyring",
+        SimpleNamespace(
+            get_password=lambda service, account: {
+                "api_id": "api-id",
+                "api_secret": "secret",
+                "organization_id": "2",
+            }[account],
+            set_password=lambda *args, **kwargs: None,
+        ),
+    )
+    store_credentials(_creds(api_id=99, secret="real-secret", org_id=1))
+
+    loaded = load_credentials(Settings())
+
+    assert loaded is not None
+    assert loaded.api_id == 99
+    assert loaded.organization_id == 1
+    assert loaded.api_secret.get_secret_value() == "real-secret"
+
+
+def test_credentials_model_rejects_non_integer_api_id() -> None:
+    with pytest.raises(ValidationError):
+        DarujmeCredentials(api_id="api-id", api_secret=SecretStr("secret"), organization_id=2)
 
 
 def test_scope_id_uses_canonical_cwd(monkeypatch, tmp_path: Path) -> None:
@@ -69,7 +110,7 @@ def test_keyring_service_is_scoped_to_cwd(monkeypatch, tmp_path: Path) -> None:
         ),
     )
 
-    store_credentials("42", "secret", 2)
+    store_credentials(_creds(api_id=42, secret="secret", org_id=2))
 
     services = {service for service, _ in stored}
     assert services == {keyring_service_name()}
@@ -91,21 +132,21 @@ def test_credentials_file_is_scoped_to_cwd(monkeypatch, tmp_path: Path) -> None:
     second.mkdir()
 
     monkeypatch.chdir(first)
-    store_credentials("first-id", "first-secret", 1)
+    store_credentials(_creds(api_id=11, secret="first-secret", org_id=1))
     first_cfg = credentials_file_path()
 
     monkeypatch.chdir(second)
-    store_credentials("second-id", "second-secret", 2)
+    store_credentials(_creds(api_id=22, secret="second-secret", org_id=2))
     second_cfg = credentials_file_path()
-    second_loaded = load_settings()
+    second_loaded = load_credentials(Settings())
 
     monkeypatch.chdir(first)
-    first_loaded = load_settings()
+    first_loaded = load_credentials(Settings())
 
     assert first_cfg != second_cfg
     assert first_cfg.parent.parent.name == "scopes"
-    assert first_loaded.darujme_api_id == "first-id"
-    assert second_loaded.darujme_api_id == "second-id"
+    assert first_loaded is not None and first_loaded.api_id == 11
+    assert second_loaded is not None and second_loaded.api_id == 22
     assert stat.S_IMODE(first_cfg.stat().st_mode) == 0o600
 
 

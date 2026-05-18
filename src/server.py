@@ -46,7 +46,7 @@ from normalization import (
     normalize_promotion,
     normalize_transaction,
 )
-from settings import load_settings, store_credentials
+from settings import DarujmeCredentials, load_credentials, load_settings, store_credentials
 
 MAX_PAGE_LIMIT = 500
 MAX_SETTLEMENT_RANGE_DAYS = 31
@@ -71,7 +71,8 @@ ProjectState = Literal["not_active", "active", "pending"]
 @lifespan
 async def app_lifespan(_server: FastMCP):
     global _LIVE_CLIENT
-    client = DarujmeClient(load_settings())
+    settings = load_settings()
+    client = DarujmeClient(settings, load_credentials(settings))
     _LIVE_CLIENT = client
     try:
         yield {"darujme_client": client}
@@ -89,8 +90,8 @@ _WEB_LOGIN_SERVERS: dict[str, ThreadingHTTPServer] = {}
 class DarujmeLogin(BaseModel):
     """Darujme login contract. All fields are required and stored locally."""
 
-    api_id: str = Field(description="Darujme API key ID")
-    api_secret: str = Field(description="Darujme API secret")
+    api_id: int = Field(description="Darujme API key ID (integer assigned by Darujme)", ge=1)
+    api_secret: str = Field(description="Darujme API secret", min_length=1)
     organization_id: int = Field(
         description=(
             "Darujme organization ID. Required because Darujme API v1 does not expose "
@@ -641,9 +642,14 @@ def _login_on_submit(login: DarujmeLogin) -> str:
     if response.status_code >= 400:
         return f"darujme_error: Darujme returned HTTP {response.status_code}: {response.text[:200]}"
 
-    store_credentials(login.api_id, login.api_secret, login.organization_id)
+    credentials = DarujmeCredentials(
+        api_id=login.api_id,
+        api_secret=login.api_secret,
+        organization_id=login.organization_id,
+    )
+    store_credentials(credentials)
     if _LIVE_CLIENT is not None:
-        _LIVE_CLIENT.set_credentials_sync(login.api_id, login.api_secret, login.organization_id)
+        _LIVE_CLIENT.set_credentials_sync(credentials)
     return (
         "Logged in to Darujme organization "
         f"{login.organization_id}. The read-only donation tools are ready to use."

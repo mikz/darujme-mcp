@@ -3,9 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from pydantic import SecretStr
 
-from settings import Settings
+from settings import DarujmeCredentials, Settings
 
 
 class DarujmeError(RuntimeError):
@@ -32,12 +31,10 @@ class NotAuthenticatedError(DarujmeError):
 
 
 class DarujmeClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, credentials: DarujmeCredentials | None = None) -> None:
         self._settings = settings
         self._base_url = str(settings.darujme_base_url).rstrip("/") + "/"
-        self._api_id = settings.darujme_api_id
-        self._api_secret = settings.darujme_api_secret
-        self._organization_id = settings.darujme_organization_id
+        self._credentials = credentials
         self._client = httpx.AsyncClient(
             base_url=self._base_url,
             timeout=httpx.Timeout(settings.darujme_timeout_seconds),
@@ -50,21 +47,16 @@ class DarujmeClient:
 
     @property
     def organization_id(self) -> int | None:
-        return self._organization_id
+        return self._credentials.organization_id if self._credentials else None
 
     def is_authenticated(self) -> bool:
-        return bool(self._api_id and self._api_secret and self._organization_id is not None)
+        return self._credentials is not None
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    def set_credentials_sync(self, api_id: str, api_secret: str, organization_id: int) -> None:
-        self._api_id = api_id
-        self._api_secret = SecretStr(api_secret)
-        self._organization_id = organization_id
-        self._settings.darujme_api_id = api_id
-        self._settings.darujme_api_secret = SecretStr(api_secret)
-        self._settings.darujme_organization_id = organization_id
+    def set_credentials_sync(self, credentials: DarujmeCredentials) -> None:
+        self._credentials = credentials
 
     async def request(
         self,
@@ -142,28 +134,19 @@ class DarujmeClient:
         return _expect_list_key(payload, "promotions")
 
     def _auth_params(self, params: dict[str, Any] | None) -> dict[str, Any]:
-        self._require_credentials()
-        assert self._api_id is not None
-        assert self._api_secret is not None
+        credentials = self._require_credentials()
         merged = dict(params or {})
-        try:
-            merged["apiId"] = int(self._api_id)
-        except (TypeError, ValueError) as exc:
-            raise DarujmeError(
-                f"darujme_api_id must be an integer (got {self._api_id!r})",
-                code="invalid_api_id",
-            ) from exc
-        merged["apiSecret"] = self._api_secret.get_secret_value()
+        merged["apiId"] = credentials.api_id
+        merged["apiSecret"] = credentials.api_secret.get_secret_value()
         return merged
 
-    def _require_credentials(self) -> None:
-        if not self._api_id or not self._api_secret or self._organization_id is None:
+    def _require_credentials(self) -> DarujmeCredentials:
+        if self._credentials is None:
             raise NotAuthenticatedError()
+        return self._credentials
 
     def _require_organization_id(self) -> int:
-        self._require_credentials()
-        assert self._organization_id is not None
-        return self._organization_id
+        return self._require_credentials().organization_id
 
 
 def _parse_response(response: httpx.Response) -> Any:
